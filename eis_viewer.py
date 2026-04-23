@@ -268,21 +268,84 @@ def enrich(pts):
 # ---------------------------------------------------------------------------
 # Equivalent circuit fitting  —  L + Rs + (Rct + W) || CPE
 # ---------------------------------------------------------------------------
-# Parameters: [L, Rs, Rct, Q, n, sigma]
-#   L     — inductance (H)
-#   Rs    — ohmic/series resistance (Ω)
-#   Rct   — charge-transfer resistance (Ω)
-#   Q     — CPE coefficient (F·s^(n-1))
-#   n     — CPE exponent  (0 < n ≤ 1)
-#   sigma — Warburg coefficient (Ω·s^-0.5)
+# Circuit models
+# ---------------------------------------------------------------------------
+
+def _prep_eis(points):
+    pts   = sorted(points, key=lambda p: p["freq"], reverse=True)
+    freqs = np.array([p["freq"] for p in pts])
+    Z     = np.array([p["zre"] + 1j * p["zim"] for p in pts])
+    omega = 2 * np.pi * freqs
+    return freqs, Z, omega
+
+def _quality(Z_fit, Z_meas):
+    rms   = float(np.sqrt(np.mean(np.abs(Z_fit - Z_meas)**2)))
+    z_rms = float(np.sqrt(np.mean(np.abs(Z_meas)**2)))
+    return round(rms / z_rms * 100, 2) if z_rms > 0 else 999.0
+
+def _smooth_curve(model_fn, params, freqs, n=200):
+    f  = np.logspace(np.log10(freqs[-1]), np.log10(freqs[0]), n)
+    Zc = model_fn(params, 2 * np.pi * f)
+    return [{"freq": float(fi), "zre": float(z.real), "zim": float(z.imag)}
+            for fi, z in zip(f, Zc)]
+
+def _rs_est(Z, n):
+    hf = np.argmin(np.abs(Z.imag[:n//3 + 1]))
+    return max(float(Z[hf].real), 1e-9)
+
+def _L_est(Z, omega):
+    ind = Z.imag > 0
+    if ind.any():
+        return max(float(np.median(Z[ind].imag / omega[ind])), 1e-12)
+    return 1e-9
+
+def _peak_omega(Z, omega):
+    neg = -Z.imag
+    i   = int(np.argmax(neg))
+    return omega[i] if neg[i] > 0 else float(np.median(omega))
+
+# ── Model: Simple  Rs + Rct∥CPE ─────────────────────────────────────────────
+
+def _simple_Z(params, omega):
+    Rs, Rct, Q, n = params
+    Z_CPE = 1.0 / (Q * ((1j * omega) ** n))
+    Z_par = Rct * Z_CPE / (Rct + Z_CPE)
+    return Rs + Z_par
+
+def fit_simple(points):
+    freqs, Z, omega = _prep_eis(points)
+    Rs0  = _rs_est(Z, len(Z))
+    Rct0 = max(float(Z[-1].real) - Rs0, Rs0 * 0.1, 1e-9)
+    Q0   = max(1.0 / (_peak_omega(Z, omega) * Rct0), 1e-9)
+
+    def _res(p, w, Zm):
+        Zc = _simple_Z(p, w)
+        return np.concatenate([Zc.real - Zm.real, Zc.imag - Zm.imag])
+
+    x0     = [Rs0, Rct0, Q0, 0.85]
+    bounds = ([0,    0,    1e-12, 0.3],
+              [1e3,  1e6,  1e3,   1.0])
+    try:
+        p = least_squares(_res, x0, args=(omega, Z), bounds=bounds,
+                          max_nfev=5000, ftol=1e-10, xtol=1e-10).x
+    except Exception:
+        p = x0
+    Rs, Rct, Q, n = p
+    return {"model": "simple",
+            "Rs": round(float(Rs), 9), "Rct": round(float(Rct), 9),
+            "Q":  round(float(Q), 12), "n":   round(float(n), 4),
+            "quality_pct": _quality(_simple_Z(p, omega), Z),
+            "curve": _smooth_curve(_simple_Z, p, freqs)}
+
+# ── Model: Randles  L + Rs + (Rct+W)∥CPE ───────────────────────────────────
 
 def _randles_Z(params, omega):
     L, Rs, Rct, Q, n, sigma = params
     jw    = 1j * omega
-    Z_W   = sigma * (1.0 - 1j) / np.sqrt(omega)        # Warburg
-    Z_CPE = 1.0 / (Q * (jw ** n))                      # CPE
-    Z_rct = Rct + Z_W                                   # Rct + Warburg series
-    Z_par = Z_rct * Z_CPE / (Z_rct + Z_CPE)            # parallel arm
+    Z_W   = sigma * (1.0 - 1j) / np.sqrt(omega)
+    Z_CPE = 1.0 / (Q * (jw ** n))
+    Z_rct = Rct + Z_W
+    Z_par = Z_rct * Z_CPE / (Z_rct + Z_CPE)
     return 1j * omega * L + Rs + Z_par
 
 
@@ -355,6 +418,7 @@ def fit_randles(points):
 
     L, Rs, Rct, Q, n, sigma = p
     return {
+        "model":  "randles",
         "L":      round(float(L),     12),
         "Rs":     round(float(Rs),    9),
         "Rct":    round(float(Rct),   9),
@@ -366,6 +430,60 @@ def fit_randles(points):
             {"freq": float(f), "zre": float(z.real), "zim": float(z.imag)}
             for f, z in zip(f_fit, Z_curve)
         ],
+    }
+
+
+# ── Model: Two-arc  L + Rs + R1∥CPE1 + (R2+W)∥CPE2 ────────────────────────
+
+def _two_arc_Z(params, omega):
+    L, Rs, R1, Q1, n1, R2, Q2, n2, sigma = params
+    jw     = 1j * omega
+    Z_CPE1 = 1.0 / (Q1 * (jw ** n1))
+    Z_par1 = R1 * Z_CPE1 / (R1 + Z_CPE1)
+    Z_W    = sigma * (1.0 - 1j) / np.sqrt(omega)
+    Z_CPE2 = 1.0 / (Q2 * (jw ** n2))
+    Z_rct2 = R2 + Z_W
+    Z_par2 = Z_rct2 * Z_CPE2 / (Z_rct2 + Z_CPE2)
+    return 1j * omega * L + Rs + Z_par1 + Z_par2
+
+def fit_two_arc(points):
+    freqs, Z, omega = _prep_eis(points)
+    Rs0    = _rs_est(Z, len(Z))
+    L0     = _L_est(Z, omega)
+    total  = max(float(Z[-1].real) - Rs0, 1e-9)
+    R10    = max(total * 0.3, 1e-9)
+    R20    = max(total * 0.7, 1e-9)
+    op     = _peak_omega(Z, omega)
+    Q10    = max(1.0 / (op * R10 * 10), 1e-9)
+    Q20    = max(1.0 / (op * R20), 1e-9)
+    sigma0 = max(abs(float(Z[-1].imag)) * math.sqrt(float(omega[-1])) * 0.5, 1e-4)
+
+    def _res(p, w, Zm):
+        Zc = _two_arc_Z(p, w)
+        return np.concatenate([Zc.real - Zm.real, Zc.imag - Zm.imag])
+
+    x0     = [L0, Rs0, R10, Q10, 0.85, R20, Q20, 0.85, sigma0]
+    bounds = ([0,    0,    0,    1e-12, 0.3, 0,    1e-12, 0.3, 0   ],
+              [1e-3, 1e3,  1e6,  1e3,   1.0, 1e6,  1e3,   1.0, 1e6 ])
+    try:
+        p = least_squares(_res, x0, args=(omega, Z), bounds=bounds,
+                          max_nfev=8000, ftol=1e-10, xtol=1e-10).x
+    except Exception:
+        p = x0
+    L, Rs, R1, Q1, n1, R2, Q2, n2, sigma = p
+    return {
+        "model": "two_arc",
+        "L":     round(float(L),     12),
+        "Rs":    round(float(Rs),    9),
+        "R1":    round(float(R1),    9),
+        "Q1":    round(float(Q1),    12),
+        "n1":    round(float(n1),    4),
+        "R2":    round(float(R2),    9),
+        "Q2":    round(float(Q2),    12),
+        "n2":    round(float(n2),    4),
+        "sigma": round(float(sigma), 6),
+        "quality_pct": _quality(_two_arc_Z(p, omega), Z),
+        "curve": _smooth_curve(_two_arc_Z, p, freqs),
     }
 
 
@@ -450,6 +568,11 @@ button{cursor:pointer}
 .btn-fit:disabled{opacity:.4;cursor:not-allowed}
 .btn-clear-s{background:rgba(255,255,255,.06);color:#94a3b8;border:1px solid rgba(255,255,255,.08)}
 .btn-clear-s:hover{background:rgba(255,255,255,.1);color:#cbd5e1}
+.model-select-wrap{padding:0 16px}
+.model-label{display:block;font-size:.72rem;color:#64748b;letter-spacing:.04em;text-transform:uppercase;margin-bottom:5px}
+.model-select{width:100%;background:#0a1525;color:#cbd5e1;border:1px solid rgba(255,255,255,.12);
+  border-radius:6px;padding:7px 10px;font-size:.8rem;outline:none;cursor:pointer}
+.model-select:focus{border-color:var(--accent)}
 
 /* ── Main area ──────────────────────────────────────────────────────────── */
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden}
@@ -613,6 +736,14 @@ tbody tr:last-child td{border-bottom:none}
       </svg>
       Plot
     </button>
+    <div class="model-select-wrap">
+      <label class="model-label">Circuit model</label>
+      <select id="model-select" class="model-select">
+        <option value="simple">Simple — Rs + Rct∥CPE</option>
+        <option value="randles" selected>Randles — L+Rs+(Rct+W)∥CPE</option>
+        <option value="two_arc">Two-arc — SEI + Rct (9 params)</option>
+      </select>
+    </div>
     <button class="btn-sidebar btn-fit" id="btn-fit" disabled>
       <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
         <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/>
@@ -659,7 +790,7 @@ tbody tr:last-child td{border-bottom:none}
             <span class="badge">Z′ vs −Z″</span>
           </div>
           <div class="fit-note" id="fit-note" style="display:none">
-            Dashed lines — fitted model: <b>L + R<sub>s</sub> + (R<sub>ct</sub> + W) ∥ CPE</b>
+            Dashed lines — fitted model: <b id="fit-note-label"></b>
           </div>
           <div class="plot-wrap" id="plt-nyquist"></div>
         </div>
@@ -711,11 +842,11 @@ tbody tr:last-child td{border-bottom:none}
           <table>
             <thead>
               <tr>
-                <th>#</th><th>File</th><th>Points</th>
+                <th>#</th><th>File</th><th>Model</th><th>Points</th>
                 <th>f max (Hz)</th><th>f min (Hz)</th>
                 <th>|Z| @ f_max (Ω)</th><th>|Z| @ f_min (Ω)</th>
                 <th>R<sub>s</sub> est.</th><th>R<sub>ct</sub> est.</th>
-                <th>R<sub>s</sub> fit</th><th>R<sub>ct</sub> fit</th>
+                <th>R<sub>s</sub> fit</th><th>R1 fit (SEI)</th><th>R<sub>ct</sub> fit</th>
                 <th>L fit (nH)</th><th>CPE-Q</th><th>CPE-n</th>
                 <th>Warburg σ</th><th>Fit error</th>
               </tr>
@@ -871,8 +1002,11 @@ btnPlot.addEventListener("click", async () => {
 });
 
 // ── FIT ───────────────────────────────────────────────────────────────────
+const modelSelect = $("model-select");
+
 btnFit.addEventListener("click", async () => {
   if (!currentDatasets.length) return;
+  const model = modelSelect.value;
   btnFit.innerHTML = '<span class="spinner"></span> Fitting…';
   btnFit.disabled  = true;
   setStatus("Fitting circuits…", "busy");
@@ -881,7 +1015,7 @@ btnFit.addEventListener("click", async () => {
     try {
       const res  = await fetch("/fit", {
         method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ points: ds.points })
+        body: JSON.stringify({ points: ds.points, model })
       });
       const json = await res.json();
       if (!json.error) currentFits[ds.name] = json;
@@ -1003,11 +1137,155 @@ function fmtSI(v, unit) {
   return v.toExponential(3) + `<span class="param-unit">${unit}</span>`;
 }
 
+const MODEL_LABELS = {
+  simple:  "Rs + Rct∥CPE",
+  randles: "L + Rs + (Rct+W)∥CPE",
+  two_arc: "L + Rs + R₁∥CPE₁ + (R₂+W)∥CPE₂",
+};
+
+const SVG_CIRCUITS = {
+  simple: `<svg viewBox="0 0 260 80" width="260" height="75" font-family="Inter,system-ui" font-size="11">
+    <line x1="0" y1="40" x2="30" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <rect x="30" y="32" width="36" height="16" rx="3" fill="#f8fafc" stroke="#10b981" stroke-width="1.8"/>
+    <text x="48" y="44" text-anchor="middle" fill="#10b981" font-weight="600">Rs</text>
+    <line x1="66" y1="40" x2="82" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <circle cx="82" cy="40" r="3" fill="#475569"/>
+    <line x1="82" y1="40" x2="82" y2="15" stroke="#475569" stroke-width="1.5"/>
+    <line x1="82" y1="15" x2="110" y2="15" stroke="#475569" stroke-width="1.5"/>
+    <rect x="110" y="7" width="36" height="16" rx="3" fill="#f8fafc" stroke="#ef4444" stroke-width="1.8"/>
+    <text x="128" y="19" text-anchor="middle" fill="#ef4444" font-weight="600">Rct</text>
+    <line x1="146" y1="15" x2="178" y2="15" stroke="#475569" stroke-width="1.5"/>
+    <line x1="178" y1="15" x2="178" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <line x1="82" y1="40" x2="82" y2="65" stroke="#475569" stroke-width="1.5"/>
+    <line x1="82" y1="65" x2="124" y2="65" stroke="#475569" stroke-width="1.5"/>
+    <line x1="124" y1="57" x2="124" y2="73" stroke="#8b5cf6" stroke-width="2.5"/>
+    <line x1="129" y1="57" x2="129" y2="73" stroke="#8b5cf6" stroke-width="2.5"/>
+    <text x="148" y="69" fill="#8b5cf6" font-weight="600">CPE</text>
+    <line x1="168" y1="65" x2="178" y2="65" stroke="#475569" stroke-width="1.5"/>
+    <line x1="178" y1="65" x2="178" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <line x1="178" y1="40" x2="260" y2="40" stroke="#475569" stroke-width="1.5"/>
+  </svg>`,
+
+  randles: `<svg viewBox="0 0 340 80" width="300" height="75" font-family="Inter,system-ui" font-size="11">
+    <line x1="0" y1="40" x2="30" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <path d="M30,40 q5,-9 10,0 q5,-9 10,0 q5,-9 10,0" fill="none" stroke="#3b82f6" stroke-width="1.8"/>
+    <text x="42" y="26" text-anchor="middle" fill="#3b82f6" font-weight="600">L</text>
+    <line x1="60" y1="40" x2="70" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <rect x="70" y="32" width="36" height="16" rx="3" fill="#f8fafc" stroke="#10b981" stroke-width="1.8"/>
+    <text x="88" y="44" text-anchor="middle" fill="#10b981" font-weight="600">Rs</text>
+    <line x1="106" y1="40" x2="128" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <circle cx="128" cy="40" r="3" fill="#475569"/>
+    <line x1="128" y1="40" x2="128" y2="15" stroke="#475569" stroke-width="1.5"/>
+    <line x1="128" y1="15" x2="155" y2="15" stroke="#475569" stroke-width="1.5"/>
+    <rect x="155" y="7" width="36" height="16" rx="3" fill="#f8fafc" stroke="#ef4444" stroke-width="1.8"/>
+    <text x="173" y="19" text-anchor="middle" fill="#ef4444" font-weight="600">Rct</text>
+    <line x1="191" y1="15" x2="210" y2="15" stroke="#475569" stroke-width="1.5"/>
+    <path d="M210,15 l5,8 l5,-8 l5,8 l5,-8" fill="none" stroke="#ef4444" stroke-width="1.8" stroke-linecap="round"/>
+    <text x="223" y="7" text-anchor="middle" fill="#ef4444" font-weight="600" font-size="9">W</text>
+    <line x1="230" y1="15" x2="262" y2="15" stroke="#475569" stroke-width="1.5"/>
+    <line x1="262" y1="15" x2="262" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <line x1="128" y1="40" x2="128" y2="65" stroke="#475569" stroke-width="1.5"/>
+    <line x1="128" y1="65" x2="178" y2="65" stroke="#475569" stroke-width="1.5"/>
+    <line x1="178" y1="57" x2="178" y2="73" stroke="#8b5cf6" stroke-width="2.5"/>
+    <line x1="183" y1="57" x2="183" y2="73" stroke="#8b5cf6" stroke-width="2.5"/>
+    <text x="197" y="69" fill="#8b5cf6" font-weight="600">CPE</text>
+    <line x1="216" y1="65" x2="262" y2="65" stroke="#475569" stroke-width="1.5"/>
+    <line x1="262" y1="65" x2="262" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <line x1="262" y1="40" x2="310" y2="40" stroke="#475569" stroke-width="1.5"/>
+  </svg>`,
+
+  two_arc: `<svg viewBox="0 0 480 90" width="420" height="80" font-family="Inter,system-ui" font-size="10">
+    <line x1="0" y1="44" x2="22" y2="44" stroke="#475569" stroke-width="1.5"/>
+    <path d="M22,44 q4,-8 8,0 q4,-8 8,0 q4,-8 8,0" fill="none" stroke="#3b82f6" stroke-width="1.8"/>
+    <text x="32" y="30" text-anchor="middle" fill="#3b82f6" font-weight="600">L</text>
+    <line x1="46" y1="44" x2="54" y2="44" stroke="#475569" stroke-width="1.5"/>
+    <rect x="54" y="36" width="30" height="14" rx="3" fill="#f8fafc" stroke="#10b981" stroke-width="1.8"/>
+    <text x="69" y="47" text-anchor="middle" fill="#10b981" font-weight="600">Rs</text>
+    <line x1="84" y1="44" x2="100" y2="44" stroke="#475569" stroke-width="1.5"/>
+    <circle cx="100" cy="44" r="2.5" fill="#475569"/>
+    <!-- Arc 1: R1∥CPE1 (SEI) -->
+    <line x1="100" y1="44" x2="100" y2="20" stroke="#475569" stroke-width="1.5"/>
+    <line x1="100" y1="20" x2="118" y2="20" stroke="#475569" stroke-width="1.5"/>
+    <rect x="118" y="13" width="28" height="13" rx="2" fill="#f8fafc" stroke="#f59e0b" stroke-width="1.8"/>
+    <text x="132" y="23" text-anchor="middle" fill="#f59e0b" font-weight="600">R1</text>
+    <line x1="146" y1="20" x2="168" y2="20" stroke="#475569" stroke-width="1.5"/>
+    <line x1="168" y1="20" x2="168" y2="44" stroke="#475569" stroke-width="1.5"/>
+    <line x1="100" y1="44" x2="100" y2="68" stroke="#475569" stroke-width="1.5"/>
+    <line x1="100" y1="68" x2="128" y2="68" stroke="#475569" stroke-width="1.5"/>
+    <line x1="128" y1="62" x2="128" y2="74" stroke="#8b5cf6" stroke-width="2.2"/>
+    <line x1="132" y1="62" x2="132" y2="74" stroke="#8b5cf6" stroke-width="2.2"/>
+    <text x="144" y="72" fill="#8b5cf6" font-weight="600">CPE1</text>
+    <line x1="162" y1="68" x2="168" y2="68" stroke="#475569" stroke-width="1.5"/>
+    <line x1="168" y1="68" x2="168" y2="44" stroke="#475569" stroke-width="1.5"/>
+    <line x1="168" y1="44" x2="190" y2="44" stroke="#475569" stroke-width="1.5"/>
+    <circle cx="190" cy="44" r="2.5" fill="#475569"/>
+    <!-- Arc 2: (R2+W)∥CPE2 (Rct) -->
+    <line x1="190" y1="44" x2="190" y2="20" stroke="#475569" stroke-width="1.5"/>
+    <line x1="190" y1="20" x2="208" y2="20" stroke="#475569" stroke-width="1.5"/>
+    <rect x="208" y="13" width="28" height="13" rx="2" fill="#f8fafc" stroke="#ef4444" stroke-width="1.8"/>
+    <text x="222" y="23" text-anchor="middle" fill="#ef4444" font-weight="600">R2</text>
+    <line x1="236" y1="20" x2="252" y2="20" stroke="#475569" stroke-width="1.5"/>
+    <path d="M252,20 l4,6 l4,-6 l4,6 l4,-6" fill="none" stroke="#ef4444" stroke-width="1.6" stroke-linecap="round"/>
+    <text x="264" y="12" text-anchor="middle" fill="#ef4444" font-weight="600" font-size="8">W</text>
+    <line x1="268" y1="20" x2="290" y2="20" stroke="#475569" stroke-width="1.5"/>
+    <line x1="290" y1="20" x2="290" y2="44" stroke="#475569" stroke-width="1.5"/>
+    <line x1="190" y1="44" x2="190" y2="68" stroke="#475569" stroke-width="1.5"/>
+    <line x1="190" y1="68" x2="218" y2="68" stroke="#475569" stroke-width="1.5"/>
+    <line x1="218" y1="62" x2="218" y2="74" stroke="#8b5cf6" stroke-width="2.2"/>
+    <line x1="222" y1="62" x2="222" y2="74" stroke="#8b5cf6" stroke-width="2.2"/>
+    <text x="236" y="72" fill="#8b5cf6" font-weight="600">CPE2</text>
+    <line x1="254" y1="68" x2="290" y2="68" stroke="#475569" stroke-width="1.5"/>
+    <line x1="290" y1="68" x2="290" y2="44" stroke="#475569" stroke-width="1.5"/>
+    <line x1="290" y1="44" x2="480" y2="44" stroke="#475569" stroke-width="1.5"/>
+  </svg>`,
+};
+
+function paramsHtml(fit) {
+  if (!fit) return `<div class="no-fit-msg">Fit failed for this dataset.</div>`;
+  const m = fit.model;
+  if (m === "simple") return `
+    <div class="param-grid">
+      <div class="param-item"><div class="param-label">R<sub>s</sub> — Series</div><div class="param-value">${fmtSI(fit.Rs,"Ω")}</div></div>
+      <div class="param-item"><div class="param-label">R<sub>ct</sub> — Charge Transfer</div><div class="param-value">${fmtSI(fit.Rct,"Ω")}</div></div>
+      <div class="param-item"><div class="param-label">CPE — Q</div><div class="param-value">${fit.Q.toExponential(3)}</div></div>
+      <div class="param-item"><div class="param-label">CPE — n</div><div class="param-value">${fit.n.toFixed(4)}<span class="param-unit">(0–1)</span></div></div>
+    </div>`;
+  if (m === "randles") return `
+    <div class="param-grid">
+      <div class="param-item"><div class="param-label">R<sub>s</sub> — Series</div><div class="param-value">${fmtSI(fit.Rs,"Ω")}</div></div>
+      <div class="param-item"><div class="param-label">R<sub>ct</sub> — Charge Transfer</div><div class="param-value">${fmtSI(fit.Rct,"Ω")}</div></div>
+      <div class="param-item"><div class="param-label">L — Inductance</div><div class="param-value">${fmtSI(fit.L,"H")}</div></div>
+      <div class="param-item"><div class="param-label">Warburg σ</div><div class="param-value">${fit.sigma.toExponential(3)}<span class="param-unit">Ω·s⁻⁰·⁵</span></div></div>
+      <div class="param-item"><div class="param-label">CPE — Q</div><div class="param-value">${fit.Q.toExponential(3)}</div></div>
+      <div class="param-item"><div class="param-label">CPE — n</div><div class="param-value">${fit.n.toFixed(4)}<span class="param-unit">(0–1)</span></div></div>
+    </div>`;
+  if (m === "two_arc") return `
+    <div class="param-grid">
+      <div class="param-item"><div class="param-label">R<sub>s</sub> — Series</div><div class="param-value">${fmtSI(fit.Rs,"Ω")}</div></div>
+      <div class="param-item"><div class="param-label">L — Inductance</div><div class="param-value">${fmtSI(fit.L,"H")}</div></div>
+      <div class="param-item"><div class="param-label">R<sub>1</sub> — SEI</div><div class="param-value">${fmtSI(fit.R1,"Ω")}</div></div>
+      <div class="param-item"><div class="param-label">CPE1 — Q</div><div class="param-value">${fit.Q1.toExponential(3)}</div></div>
+      <div class="param-item"><div class="param-label">CPE1 — n</div><div class="param-value">${fit.n1.toFixed(4)}<span class="param-unit">(0–1)</span></div></div>
+      <div class="param-item"><div class="param-label">R<sub>2</sub> — Charge Transfer</div><div class="param-value">${fmtSI(fit.R2,"Ω")}</div></div>
+      <div class="param-item"><div class="param-label">CPE2 — Q</div><div class="param-value">${fit.Q2.toExponential(3)}</div></div>
+      <div class="param-item"><div class="param-label">CPE2 — n</div><div class="param-value">${fit.n2.toFixed(4)}<span class="param-unit">(0–1)</span></div></div>
+      <div class="param-item"><div class="param-label">Warburg σ</div><div class="param-value">${fit.sigma.toExponential(3)}<span class="param-unit">Ω·s⁻⁰·⁵</span></div></div>
+    </div>`;
+  return "";
+}
+
 function buildFitCards(datasets, fits) {
   fitGrid.innerHTML = "";
   const hasFits = Object.keys(fits).length > 0;
   emptyFit.style.display = hasFits ? "none" : "";
   if (!hasFits) return;
+
+  // Update fit note label to reflect the model used
+  const anyFit = Object.values(fits)[0];
+  if (anyFit) {
+    const lbl = $("fit-note-label");
+    if (lbl) lbl.textContent = MODEL_LABELS[anyFit.model] || anyFit.model;
+  }
 
   datasets.forEach(ds => {
     const fit = fits[ds.name];
@@ -1023,72 +1301,8 @@ function buildFitCards(datasets, fits) {
         <h3 title="${ds.name}">${ds.name}</h3>
         ${fit ? `<span class="fit-quality ${qc}">${qTxt} error</span>` : ""}
       </div>
-      ${fit ? `
-      <div class="circuit-svg-wrap">
-        <svg viewBox="0 0 340 80" width="300" height="75" font-family="Inter,system-ui" font-size="11">
-          <!-- Wire in / out -->
-          <line x1="0" y1="40" x2="30" y2="40" stroke="#475569" stroke-width="1.5"/>
-          <line x1="310" y1="40" x2="340" y2="40" stroke="#475569" stroke-width="1.5"/>
-          <!-- L -->
-          <path d="M30,40 q5,-9 10,0 q5,-9 10,0 q5,-9 10,0" fill="none" stroke="#3b82f6" stroke-width="1.8"/>
-          <line x1="30" y1="40" x2="30" y2="40" stroke="#3b82f6" stroke-width="1.5"/>
-          <text x="42" y="26" text-anchor="middle" fill="#3b82f6" font-weight="600">L</text>
-          <!-- Rs -->
-          <rect x="70" y="32" width="36" height="16" rx="3" fill="#f8fafc" stroke="#10b981" stroke-width="1.8"/>
-          <text x="88" y="44" text-anchor="middle" fill="#10b981" font-weight="600">Rs</text>
-          <!-- junction -->
-          <line x1="60" y1="40" x2="106" y2="40" stroke="#475569" stroke-width="1.5"/>
-          <line x1="118" y1="40" x2="128" y2="40" stroke="#475569" stroke-width="1.5"/>
-          <circle cx="128" cy="40" r="3" fill="#475569"/>
-          <!-- top branch: Rct + W -->
-          <line x1="128" y1="40" x2="128" y2="15" stroke="#475569" stroke-width="1.5"/>
-          <line x1="128" y1="15" x2="155" y2="15" stroke="#475569" stroke-width="1.5"/>
-          <rect x="155" y="7" width="36" height="16" rx="3" fill="#f8fafc" stroke="#ef4444" stroke-width="1.8"/>
-          <text x="173" y="19" text-anchor="middle" fill="#ef4444" font-weight="600">Rct</text>
-          <line x1="191" y1="15" x2="210" y2="15" stroke="#475569" stroke-width="1.5"/>
-          <!-- W symbol -->
-          <path d="M210,15 l5,8 l5,-8 l5,8 l5,-8" fill="none" stroke="#ef4444" stroke-width="1.8" stroke-linecap="round"/>
-          <text x="223" y="7" text-anchor="middle" fill="#ef4444" font-weight="600" font-size="9">W</text>
-          <line x1="230" y1="15" x2="262" y2="15" stroke="#475569" stroke-width="1.5"/>
-          <line x1="262" y1="15" x2="262" y2="40" stroke="#475569" stroke-width="1.5"/>
-          <!-- bottom branch: CPE -->
-          <line x1="128" y1="40" x2="128" y2="65" stroke="#475569" stroke-width="1.5"/>
-          <line x1="128" y1="65" x2="178" y2="65" stroke="#475569" stroke-width="1.5"/>
-          <line x1="178" y1="57" x2="178" y2="73" stroke="#8b5cf6" stroke-width="2.5"/>
-          <line x1="183" y1="57" x2="183" y2="73" stroke="#8b5cf6" stroke-width="2.5"/>
-          <text x="197" y="69" fill="#8b5cf6" font-weight="600">CPE</text>
-          <line x1="216" y1="65" x2="262" y2="65" stroke="#475569" stroke-width="1.5"/>
-          <line x1="262" y1="65" x2="262" y2="40" stroke="#475569" stroke-width="1.5"/>
-          <!-- out wire -->
-          <line x1="262" y1="40" x2="310" y2="40" stroke="#475569" stroke-width="1.5"/>
-        </svg>
-      </div>
-      <div class="param-grid">
-        <div class="param-item">
-          <div class="param-label">R<sub>s</sub> — Series</div>
-          <div class="param-value">${fmtSI(fit.Rs,"Ω")}</div>
-        </div>
-        <div class="param-item">
-          <div class="param-label">R<sub>ct</sub> — Charge Transfer</div>
-          <div class="param-value">${fmtSI(fit.Rct,"Ω")}</div>
-        </div>
-        <div class="param-item">
-          <div class="param-label">L — Inductance</div>
-          <div class="param-value">${fmtSI(fit.L,"H")}</div>
-        </div>
-        <div class="param-item">
-          <div class="param-label">Warburg σ</div>
-          <div class="param-value">${fit.sigma.toExponential(3)}<span class="param-unit">Ω·s⁻⁰·⁵</span></div>
-        </div>
-        <div class="param-item">
-          <div class="param-label">CPE — Q</div>
-          <div class="param-value">${fit.Q.toExponential(3)}</div>
-        </div>
-        <div class="param-item">
-          <div class="param-label">CPE — n</div>
-          <div class="param-value">${fit.n.toFixed(4)}<span class="param-unit">(0–1)</span></div>
-        </div>
-      </div>` : `<div class="no-fit-msg">Fit failed for this dataset.</div>`}`;
+      ${fit ? `<div class="circuit-svg-wrap">${SVG_CIRCUITS[fit.model] || ""}</div>${paramsHtml(fit)}`
+             : `<div class="no-fit-msg">Fit failed for this dataset.</div>`}`;
     fitGrid.appendChild(card);
   });
 }
@@ -1108,11 +1322,22 @@ function buildSummaryTable(datasets, fits) {
     const fmt = (v, d=4) => v==null ? "—" : Number(v).toPrecision(d);
     const qc  = fit ? (fit.quality_pct<5?"q-good":fit.quality_pct<15?"q-ok":"q-bad") : "";
 
+    // Model-aware fit value extraction
+    const modelName = fit ? ({simple:"Simple",randles:"Randles",two_arc:"Two-arc"}[fit.model]||fit.model) : "—";
+    const f_Rs    = fit ? fmt(fit.Rs) : "—";
+    const f_R1    = fit ? (fit.model==="two_arc" ? fmt(fit.R1) : "—") : "—";
+    const f_Rct   = fit ? (fit.model==="two_arc" ? fmt(fit.R2) : fmt(fit.Rct)) : "—";
+    const f_L     = fit ? (fit.L!=null ? fmt(fit.L*1e9,3) : "—") : "—";
+    const f_Q     = fit ? (fit.model==="two_arc" ? fit.Q2.toExponential(2) : fit.Q.toExponential(2)) : "—";
+    const f_n     = fit ? (fit.model==="two_arc" ? fit.n2.toFixed(3) : fit.n.toFixed(3)) : "—";
+    const f_sigma = fit ? (fit.sigma!=null ? fit.sigma.toExponential(2) : "—") : "—";
+
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td class="num">${i+1}</td>
       <td><span style="display:inline-block;width:9px;height:9px;border-radius:50%;
           background:${ds.color};margin-right:7px;vertical-align:middle"></span>${ds.name}</td>
+      <td>${modelName}</td>
       <td class="num">${pts.length}</td>
       <td class="num">${fmax.toFixed(2)}</td>
       <td class="num">${fmin.toFixed(3)}</td>
@@ -1120,12 +1345,13 @@ function buildSummaryTable(datasets, fits) {
       <td class="num">${pts[pts.length-1].zmag.toExponential(3)}</td>
       <td class="num">${Rs_est.toExponential(3)}</td>
       <td class="num">${Rct_est>0?Rct_est.toExponential(3):"—"}</td>
-      <td class="num">${fit?fmt(fit.Rs):"—"}</td>
-      <td class="num">${fit?fmt(fit.Rct):"—"}</td>
-      <td class="num">${fit?fmt(fit.L*1e9,3):"—"}</td>
-      <td class="num">${fit?fit.Q.toExponential(2):"—"}</td>
-      <td class="num">${fit?fit.n.toFixed(3):"—"}</td>
-      <td class="num">${fit?fit.sigma.toExponential(2):"—"}</td>
+      <td class="num">${f_Rs}</td>
+      <td class="num">${f_R1}</td>
+      <td class="num">${f_Rct}</td>
+      <td class="num">${f_L}</td>
+      <td class="num">${f_Q}</td>
+      <td class="num">${f_n}</td>
+      <td class="num">${f_sigma}</td>
       <td class="num ${qc}">${fit?fit.quality_pct.toFixed(1)+"%":"—"}</td>`;
     summaryBody.appendChild(tr);
   });
@@ -1134,22 +1360,28 @@ function buildSummaryTable(datasets, fits) {
 // ── CSV export ────────────────────────────────────────────────────────────
 btnCsv.addEventListener("click", () => {
   if (!currentDatasets.length) return;
-  const hdr = ["File","Points","f_max_Hz","f_min_Hz","|Z|_fmax_Ohm","|Z|_fmin_Ohm",
-    "Rs_est_Ohm","Rct_est_Ohm","Rs_fit_Ohm","Rct_fit_Ohm","L_fit_nH",
+  const hdr = ["File","Model","Points","f_max_Hz","f_min_Hz","|Z|_fmax_Ohm","|Z|_fmin_Ohm",
+    "Rs_est_Ohm","Rct_est_Ohm","Rs_fit_Ohm","R1_SEI_fit_Ohm","Rct_fit_Ohm","L_fit_nH",
     "CPE_Q","CPE_n","Warburg_sigma","Fit_error_pct"];
   const rows = [hdr.join(",")];
   currentDatasets.forEach(ds => {
     const pts = sortByFreq(ds.points);
     const Rs  = pts[0].zre, Rct = pts[pts.length-1].zre - Rs;
     const fit = currentFits[ds.name];
+    const m   = fit ? fit.model : "";
     rows.push([
-      `"${ds.name}"`, pts.length,
+      `"${ds.name}"`, m,
+      pts.length,
       pts[0].freq.toFixed(3), pts[pts.length-1].freq.toFixed(4),
       pts[0].zmag.toExponential(4), pts[pts.length-1].zmag.toExponential(4),
       Rs.toExponential(4), Rct>0?Rct.toExponential(4):"",
-      fit?fit.Rs.toExponential(4):"", fit?fit.Rct.toExponential(4):"",
-      fit?(fit.L*1e9).toFixed(3):"", fit?fit.Q.toExponential(4):"",
-      fit?fit.n.toFixed(4):"", fit?fit.sigma.toExponential(4):"",
+      fit?fit.Rs.toExponential(4):"",
+      fit&&m==="two_arc"?fit.R1.toExponential(4):"",
+      fit?(m==="two_arc"?fit.R2:fit.Rct).toExponential(4):"",
+      fit&&fit.L!=null?(fit.L*1e9).toFixed(3):"",
+      fit?(m==="two_arc"?fit.Q2:fit.Q).toExponential(4):"",
+      fit?(m==="two_arc"?fit.n2:fit.n).toFixed(4):"",
+      fit&&fit.sigma!=null?fit.sigma.toExponential(4):"",
       fit?fit.quality_pct.toFixed(2):""
     ].join(","));
   });
@@ -1195,10 +1427,12 @@ def parse_route():
 def fit_route():
     data   = request.get_json(force=True)
     points = data.get("points", [])
+    model  = data.get("model", "randles")
     if len(points) < 5:
         return jsonify({"error": "need at least 5 points to fit"}), 200
     try:
-        result = fit_randles(points)
+        fn = {"simple": fit_simple, "randles": fit_randles, "two_arc": fit_two_arc}.get(model, fit_randles)
+        result = fn(points)
     except Exception as e:
         return jsonify({"error": str(e)}), 200
     return jsonify(result)
