@@ -487,6 +487,84 @@ def fit_two_arc(points):
     }
 
 
+# ── Model: CPE (blocking)  Rs + CPE ─────────────────────────────────────────
+# Good for incomplete arcs — fits visible data without assuming arc closure.
+
+def _cpe_Z(params, omega):
+    Rs, Q, n = params
+    return Rs + 1.0 / (Q * ((1j * omega) ** n))
+
+def fit_cpe(points):
+    freqs, Z, omega = _prep_eis(points)
+    Rs0 = _rs_est(Z, len(Z))
+    mid = len(Z) // 2
+    mag_mid = abs(Z[mid] - Rs0)
+    Q0  = max(1.0 / (mag_mid * omega[mid] ** 0.8), 1e-9) if mag_mid > 0 else 1e-3
+
+    def _res(p, w, Zm):
+        Zc = _cpe_Z(p, w)
+        return np.concatenate([Zc.real - Zm.real, Zc.imag - Zm.imag])
+
+    x0     = [Rs0, Q0, 0.8]
+    bounds = ([0, 1e-12, 0.1], [1e3, 1e6, 1.0])
+    try:
+        p = least_squares(_res, x0, args=(omega, Z), bounds=bounds,
+                          max_nfev=5000, ftol=1e-12, xtol=1e-12).x
+    except Exception:
+        p = x0
+    Rs, Q, n = p
+    return {"model": "cpe",
+            "Rs": round(float(Rs), 9), "Q": round(float(Q), 12), "n": round(float(n), 4),
+            "quality_pct": _quality(_cpe_Z(p, omega), Z),
+            "curve": _smooth_curve(_cpe_Z, p, freqs)}
+
+
+# ── Model: FLW  L + Rs + (Rct + FLW) ∥ CPE ─────────────────────────────────
+# FLW = finite-length (reflective) Warburg: Rd·tanh(√jωτ)/√jωτ
+# Models bounded diffusion in battery electrodes.
+
+def _flw_Z(params, omega):
+    L, Rs, Rct, Q, n, Rd, tau = params
+    jw      = 1j * omega
+    sqjwt   = np.sqrt(jw * tau)
+    Z_FLW   = Rd * np.tanh(sqjwt) / sqjwt
+    Z_CPE   = 1.0 / (Q * (jw ** n))
+    Z_rct   = Rct + Z_FLW
+    Z_par   = Z_rct * Z_CPE / (Z_rct + Z_CPE)
+    return 1j * omega * L + Rs + Z_par
+
+def fit_flw(points):
+    freqs, Z, omega = _prep_eis(points)
+    Rs0    = _rs_est(Z, len(Z))
+    L0     = _L_est(Z, omega)
+    Rct0   = max(float(Z[-1].real) - Rs0, Rs0 * 0.1, 1e-9)
+    op     = _peak_omega(Z, omega)
+    Q0     = max(1.0 / (op * Rct0), 1e-9)
+    Rd0    = Rct0 * 0.5
+    tau0   = 1.0 / op
+
+    def _res(p, w, Zm):
+        Zc = _flw_Z(p, w)
+        return np.concatenate([Zc.real - Zm.real, Zc.imag - Zm.imag])
+
+    x0     = [L0, Rs0, Rct0, Q0, 0.85, Rd0, tau0]
+    bounds = ([0,    0,    0,    1e-12, 0.3, 0,    1e-9 ],
+              [1e-3, 1e3,  1e6,  1e3,   1.0, 1e6,  1e6  ])
+    try:
+        p = least_squares(_res, x0, args=(omega, Z), bounds=bounds,
+                          max_nfev=8000, ftol=1e-12, xtol=1e-12).x
+    except Exception:
+        p = x0
+    L, Rs, Rct, Q, n, Rd, tau = p
+    return {"model": "flw",
+            "L":   round(float(L),   12), "Rs":  round(float(Rs),  9),
+            "Rct": round(float(Rct), 9),  "Q":   round(float(Q),   12),
+            "n":   round(float(n),   4),  "Rd":  round(float(Rd),  9),
+            "tau": round(float(tau), 9),
+            "quality_pct": _quality(_flw_Z(p, omega), Z),
+            "curve": _smooth_curve(_flw_Z, p, freqs)}
+
+
 # ---------------------------------------------------------------------------
 # HTML template
 # ---------------------------------------------------------------------------
@@ -618,10 +696,15 @@ button{cursor:pointer}
   box-shadow:var(--shadow)}
 .plot-card.wide{grid-column:1/-1}
 .plot-title{font-size:.82rem;font-weight:700;color:var(--navy);margin-bottom:4px;
-  display:flex;align-items:center;gap:8px}
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .plot-title .badge{font-size:.67rem;padding:2px 7px;border-radius:10px;
   background:#eff6ff;color:var(--accent2);font-weight:600}
 .plot-wrap{width:100%;height:320px}
+.range-btns{display:flex;gap:3px;margin-left:auto}
+.range-btn{font-size:.68rem;padding:3px 9px;border-radius:5px;border:1px solid var(--border);
+  background:var(--surface2);color:var(--muted);cursor:pointer;font-weight:500;transition:all .15s}
+.range-btn:hover{border-color:var(--accent);color:var(--accent)}
+.range-btn.active{background:#eff6ff;border-color:var(--accent);color:var(--accent2);font-weight:700}
 
 /* Fit badge on Nyquist */
 .fit-note{font-size:.72rem;color:var(--muted2);margin-bottom:6px}
@@ -742,6 +825,8 @@ tbody tr:last-child td{border-bottom:none}
         <option value="simple">Simple — Rs + Rct∥CPE</option>
         <option value="randles" selected>Randles — L+Rs+(Rct+W)∥CPE</option>
         <option value="two_arc">Two-arc — SEI + Rct (9 params)</option>
+        <option value="cpe">CPE blocking — Rs + CPE</option>
+        <option value="flw">FLW — L+Rs+(Rct+FLW)∥CPE</option>
       </select>
     </div>
     <button class="btn-sidebar btn-fit" id="btn-fit" disabled>
@@ -788,6 +873,11 @@ tbody tr:last-child td{border-bottom:none}
           <div class="plot-title">
             Nyquist Plot
             <span class="badge">Z′ vs −Z″</span>
+            <div class="range-btns">
+              <button class="range-btn" data-range="auto">Auto</button>
+              <button class="range-btn active" data-range="quadrant">Quadrant I</button>
+              <button class="range-btn" data-range="inductive">Show inductive</button>
+            </div>
           </div>
           <div class="fit-note" id="fit-note" style="display:none">
             Dashed lines — fitted model: <b id="fit-note-label"></b>
@@ -871,6 +961,7 @@ const PALETTE = [
 
 let fileQueue = [], idCounter = 0;
 let currentDatasets = [], currentFits = {};
+let nyqRangeMode = "quadrant";
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -891,6 +982,16 @@ const summaryWrap = $("summary-wrap");
 const emptySummary= $("empty-summary");
 const summaryBody = $("summary-body");
 const fitNote     = $("fit-note");
+
+// ── Nyquist range toggle ──────────────────────────────────────────────────
+document.querySelectorAll(".range-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".range-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    nyqRangeMode = btn.dataset.range;
+    if (currentDatasets.length) buildPlots(currentDatasets, currentFits);
+  });
+});
 
 // ── Tabs ──────────────────────────────────────────────────────────────────
 document.querySelectorAll(".tab").forEach(tab => {
@@ -1068,9 +1169,12 @@ function buildPlots(datasets, fits) {
 
   // Nyquist
   const nyqT = [];
+  let nyqXall = [], nyqYall = [];
   datasets.forEach(ds => {
     const s = sortByFreq(ds.points);
-    nyqT.push({ x:s.map(p=>p.zre), y:s.map(p=>-p.zim),
+    const xs = s.map(p=>p.zre), ys = s.map(p=>-p.zim);
+    nyqXall = nyqXall.concat(xs); nyqYall = nyqYall.concat(ys);
+    nyqT.push({ x:xs, y:ys,
       text:s.map(p=>`${p.freq.toFixed(3)} Hz`),
       mode:"lines+markers", name:ds.name,
       line:{color:ds.color,width:2}, marker:{size:4.5,color:ds.color},
@@ -1078,15 +1182,32 @@ function buildPlots(datasets, fits) {
     });
     if (fits[ds.name]) {
       const c = fits[ds.name].curve;
-      nyqT.push({ x:c.map(p=>p.zre), y:c.map(p=>-p.zim), mode:"lines",
+      const cx = c.map(p=>p.zre), cy = c.map(p=>-p.zim);
+      nyqXall = nyqXall.concat(cx); nyqYall = nyqYall.concat(cy);
+      nyqT.push({ x:cx, y:cy, mode:"lines",
         name:`${ds.name} fit`, showlegend:false,
         line:{color:ds.color,width:2,dash:"dash"}, hoverinfo:"skip" });
     }
   });
+  // Compute axis ranges based on selected mode
+  const _pad = (lo, hi) => { const p = (hi - lo || hi) * 0.05; return [lo - p, hi + p]; };
+  const allXmin = Math.min(...nyqXall), allXmax = Math.max(...nyqXall);
+  const allYmin = Math.min(...nyqYall), allYmax = Math.max(...nyqYall);
+  let xRange, yRange;
+  if (nyqRangeMode === "auto") {
+    xRange = undefined; yRange = undefined;          // let Plotly decide
+  } else if (nyqRangeMode === "quadrant") {
+    xRange = _pad(Math.max(0, allXmin), allXmax);   // x ≥ 0, y ≥ 0
+    yRange = _pad(Math.max(0, allYmin), allYmax);
+  } else {                                           // "inductive" — full data range
+    xRange = _pad(Math.max(0, allXmin), allXmax);   // x still ≥ 0 (Z' is always positive)
+    yRange = _pad(allYmin, allYmax);                 // y can go negative (inductive hook)
+  }
   Plotly.newPlot("plt-nyquist", nyqT, {
     ...LAY,
-    xaxis:{...LAY.xaxis,title:"Z′ (Ω)"},
-    yaxis:{...LAY.yaxis,title:"−Z″ (Ω)",scaleanchor:"x",scaleratio:1}
+    xaxis:{...LAY.xaxis, title:"Z′ (Ω)", ...(xRange ? {range:xRange} : {autorange:true})},
+    yaxis:{...LAY.yaxis, title:"−Z″ (Ω)", scaleanchor:"x", scaleratio:1,
+           ...(yRange ? {range:yRange} : {autorange:true})}
   }, {responsive:true,displayModeBar:true,displaylogo:false});
 
   // Bode |Z|
@@ -1141,6 +1262,8 @@ const MODEL_LABELS = {
   simple:  "Rs + Rct∥CPE",
   randles: "L + Rs + (Rct+W)∥CPE",
   two_arc: "L + Rs + R₁∥CPE₁ + (R₂+W)∥CPE₂",
+  cpe:     "Rs + CPE (blocking)",
+  flw:     "L + Rs + (Rct+FLW)∥CPE",
 };
 
 const SVG_CIRCUITS = {
@@ -1183,6 +1306,45 @@ const SVG_CIRCUITS = {
     <path d="M210,15 l5,8 l5,-8 l5,8 l5,-8" fill="none" stroke="#ef4444" stroke-width="1.8" stroke-linecap="round"/>
     <text x="223" y="7" text-anchor="middle" fill="#ef4444" font-weight="600" font-size="9">W</text>
     <line x1="230" y1="15" x2="262" y2="15" stroke="#475569" stroke-width="1.5"/>
+    <line x1="262" y1="15" x2="262" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <line x1="128" y1="40" x2="128" y2="65" stroke="#475569" stroke-width="1.5"/>
+    <line x1="128" y1="65" x2="178" y2="65" stroke="#475569" stroke-width="1.5"/>
+    <line x1="178" y1="57" x2="178" y2="73" stroke="#8b5cf6" stroke-width="2.5"/>
+    <line x1="183" y1="57" x2="183" y2="73" stroke="#8b5cf6" stroke-width="2.5"/>
+    <text x="197" y="69" fill="#8b5cf6" font-weight="600">CPE</text>
+    <line x1="216" y1="65" x2="262" y2="65" stroke="#475569" stroke-width="1.5"/>
+    <line x1="262" y1="65" x2="262" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <line x1="262" y1="40" x2="310" y2="40" stroke="#475569" stroke-width="1.5"/>
+  </svg>`,
+
+  cpe: `<svg viewBox="0 0 200 60" width="200" height="55" font-family="Inter,system-ui" font-size="11">
+    <line x1="0" y1="30" x2="28" y2="30" stroke="#475569" stroke-width="1.5"/>
+    <rect x="28" y="22" width="32" height="14" rx="3" fill="#f8fafc" stroke="#10b981" stroke-width="1.8"/>
+    <text x="44" y="33" text-anchor="middle" fill="#10b981" font-weight="600">Rs</text>
+    <line x1="60" y1="30" x2="82" y2="30" stroke="#475569" stroke-width="1.5"/>
+    <line x1="82" y1="22" x2="82" y2="38" stroke="#8b5cf6" stroke-width="2.5"/>
+    <line x1="87" y1="22" x2="87" y2="38" stroke="#8b5cf6" stroke-width="2.5"/>
+    <text x="104" y="34" fill="#8b5cf6" font-weight="600">CPE</text>
+    <line x1="122" y1="30" x2="200" y2="30" stroke="#475569" stroke-width="1.5"/>
+  </svg>`,
+
+  flw: `<svg viewBox="0 0 340 80" width="300" height="75" font-family="Inter,system-ui" font-size="11">
+    <line x1="0" y1="40" x2="30" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <path d="M30,40 q5,-9 10,0 q5,-9 10,0 q5,-9 10,0" fill="none" stroke="#3b82f6" stroke-width="1.8"/>
+    <text x="42" y="26" text-anchor="middle" fill="#3b82f6" font-weight="600">L</text>
+    <line x1="60" y1="40" x2="70" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <rect x="70" y="32" width="36" height="16" rx="3" fill="#f8fafc" stroke="#10b981" stroke-width="1.8"/>
+    <text x="88" y="44" text-anchor="middle" fill="#10b981" font-weight="600">Rs</text>
+    <line x1="106" y1="40" x2="128" y2="40" stroke="#475569" stroke-width="1.5"/>
+    <circle cx="128" cy="40" r="3" fill="#475569"/>
+    <line x1="128" y1="40" x2="128" y2="15" stroke="#475569" stroke-width="1.5"/>
+    <line x1="128" y1="15" x2="155" y2="15" stroke="#475569" stroke-width="1.5"/>
+    <rect x="155" y="7" width="36" height="16" rx="3" fill="#f8fafc" stroke="#ef4444" stroke-width="1.8"/>
+    <text x="173" y="19" text-anchor="middle" fill="#ef4444" font-weight="600">Rct</text>
+    <line x1="191" y1="15" x2="208" y2="15" stroke="#475569" stroke-width="1.5"/>
+    <path d="M208,9 Q214,15 220,9 Q226,15 232,9 Q238,15 244,9" fill="none" stroke="#ef4444" stroke-width="1.8" stroke-linecap="round"/>
+    <text x="226" y="7" text-anchor="middle" fill="#ef4444" font-weight="600" font-size="9">FLW</text>
+    <line x1="244" y1="15" x2="262" y2="15" stroke="#475569" stroke-width="1.5"/>
     <line x1="262" y1="15" x2="262" y2="40" stroke="#475569" stroke-width="1.5"/>
     <line x1="128" y1="40" x2="128" y2="65" stroke="#475569" stroke-width="1.5"/>
     <line x1="128" y1="65" x2="178" y2="65" stroke="#475569" stroke-width="1.5"/>
@@ -1259,6 +1421,22 @@ function paramsHtml(fit) {
       <div class="param-item"><div class="param-label">CPE — Q</div><div class="param-value">${fit.Q.toExponential(3)}</div></div>
       <div class="param-item"><div class="param-label">CPE — n</div><div class="param-value">${fit.n.toFixed(4)}<span class="param-unit">(0–1)</span></div></div>
     </div>`;
+  if (m === "cpe") return `
+    <div class="param-grid">
+      <div class="param-item"><div class="param-label">R<sub>s</sub> — Series</div><div class="param-value">${fmtSI(fit.Rs,"Ω")}</div></div>
+      <div class="param-item"><div class="param-label">CPE — Q</div><div class="param-value">${fit.Q.toExponential(3)}</div></div>
+      <div class="param-item"><div class="param-label">CPE — n</div><div class="param-value">${fit.n.toFixed(4)}<span class="param-unit">(0–1)</span></div></div>
+    </div>`;
+  if (m === "flw") return `
+    <div class="param-grid">
+      <div class="param-item"><div class="param-label">R<sub>s</sub> — Series</div><div class="param-value">${fmtSI(fit.Rs,"Ω")}</div></div>
+      <div class="param-item"><div class="param-label">R<sub>ct</sub> — Charge Transfer</div><div class="param-value">${fmtSI(fit.Rct,"Ω")}</div></div>
+      <div class="param-item"><div class="param-label">L — Inductance</div><div class="param-value">${fmtSI(fit.L,"H")}</div></div>
+      <div class="param-item"><div class="param-label">R<sub>d</sub> — FLW diffusion R</div><div class="param-value">${fmtSI(fit.Rd,"Ω")}</div></div>
+      <div class="param-item"><div class="param-label">τ — diffusion time</div><div class="param-value">${fit.tau.toExponential(3)}<span class="param-unit">s</span></div></div>
+      <div class="param-item"><div class="param-label">CPE — Q</div><div class="param-value">${fit.Q.toExponential(3)}</div></div>
+      <div class="param-item"><div class="param-label">CPE — n</div><div class="param-value">${fit.n.toFixed(4)}<span class="param-unit">(0–1)</span></div></div>
+    </div>`;
   if (m === "two_arc") return `
     <div class="param-grid">
       <div class="param-item"><div class="param-label">R<sub>s</sub> — Series</div><div class="param-value">${fmtSI(fit.Rs,"Ω")}</div></div>
@@ -1323,10 +1501,12 @@ function buildSummaryTable(datasets, fits) {
     const qc  = fit ? (fit.quality_pct<5?"q-good":fit.quality_pct<15?"q-ok":"q-bad") : "";
 
     // Model-aware fit value extraction
-    const modelName = fit ? ({simple:"Simple",randles:"Randles",two_arc:"Two-arc"}[fit.model]||fit.model) : "—";
+    const MODEL_NAMES = {simple:"Simple",randles:"Randles",two_arc:"Two-arc",cpe:"CPE",flw:"FLW"};
+    const modelName = fit ? (MODEL_NAMES[fit.model]||fit.model) : "—";
     const f_Rs    = fit ? fmt(fit.Rs) : "—";
     const f_R1    = fit ? (fit.model==="two_arc" ? fmt(fit.R1) : "—") : "—";
-    const f_Rct   = fit ? (fit.model==="two_arc" ? fmt(fit.R2) : fmt(fit.Rct)) : "—";
+    const f_Rct   = fit ? (fit.model==="two_arc" ? fmt(fit.R2) :
+                           fit.model==="cpe"      ? "—" : fmt(fit.Rct)) : "—";
     const f_L     = fit ? (fit.L!=null ? fmt(fit.L*1e9,3) : "—") : "—";
     const f_Q     = fit ? (fit.model==="two_arc" ? fit.Q2.toExponential(2) : fit.Q.toExponential(2)) : "—";
     const f_n     = fit ? (fit.model==="two_arc" ? fit.n2.toFixed(3) : fit.n.toFixed(3)) : "—";
@@ -1377,7 +1557,7 @@ btnCsv.addEventListener("click", () => {
       Rs.toExponential(4), Rct>0?Rct.toExponential(4):"",
       fit?fit.Rs.toExponential(4):"",
       fit&&m==="two_arc"?fit.R1.toExponential(4):"",
-      fit?(m==="two_arc"?fit.R2:fit.Rct).toExponential(4):"",
+      fit?(m==="two_arc"?fit.R2:m==="cpe"?null:fit.Rct)?.toExponential(4)??"":"",
       fit&&fit.L!=null?(fit.L*1e9).toFixed(3):"",
       fit?(m==="two_arc"?fit.Q2:fit.Q).toExponential(4):"",
       fit?(m==="two_arc"?fit.n2:fit.n).toFixed(4):"",
@@ -1431,7 +1611,8 @@ def fit_route():
     if len(points) < 5:
         return jsonify({"error": "need at least 5 points to fit"}), 200
     try:
-        fn = {"simple": fit_simple, "randles": fit_randles, "two_arc": fit_two_arc}.get(model, fit_randles)
+        fn = {"simple": fit_simple, "randles": fit_randles,
+              "two_arc": fit_two_arc, "cpe": fit_cpe, "flw": fit_flw}.get(model, fit_randles)
         result = fn(points)
     except Exception as e:
         return jsonify({"error": str(e)}), 200
@@ -1443,7 +1624,10 @@ def fit_route():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    url = f"http://localhost:{PORT}"
-    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    import os
+    host = os.environ.get("HOST", "localhost")
+    url  = f"http://localhost:{PORT}"
     print(f"EIS Viewer running at {url}")
-    app.run(port=PORT, debug=False)
+    if host == "localhost":
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    app.run(host=host, port=PORT, debug=False)
