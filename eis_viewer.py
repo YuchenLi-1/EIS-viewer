@@ -381,186 +381,430 @@ HTML = r"""<!DOCTYPE html>
 <title>EIS Viewer</title>
 <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
 <style>
-  :root{--navy:#0c2143;--blue:#2563eb;--green:#16a34a;--bg:#f0f4f8;--card:#fff;--border:#d1d5db;--muted:#64748b}
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:system-ui,sans-serif;background:var(--bg);color:#1e293b;min-height:100vh}
-  header{background:var(--navy);color:#fff;padding:14px 28px;display:flex;align-items:center;gap:16px}
-  header h1{font-size:1.25rem;font-weight:700;letter-spacing:.02em}
-  header span{font-size:.85rem;opacity:.65}
-  .main{max-width:1200px;margin:0 auto;padding:24px 20px}
+/* ── Reset & tokens ─────────────────────────────────────────────────────── */
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --navy:#0d1b2e; --navy2:#162032; --accent:#3b82f6; --accent2:#2563eb;
+  --green:#10b981; --amber:#f59e0b; --red:#ef4444;
+  --bg:#f1f5f9; --surface:#fff; --surface2:#f8fafc;
+  --border:#e2e8f0; --border2:#cbd5e1;
+  --text:#0f172a; --muted:#64748b; --muted2:#94a3b8;
+  --radius:10px; --shadow:0 1px 3px rgba(0,0,0,.08),0 4px 12px rgba(0,0,0,.04);
+  --shadow-lg:0 4px 16px rgba(0,0,0,.12);
+}
+body{font-family:"Inter",system-ui,sans-serif;background:var(--bg);color:var(--text);
+  min-height:100vh;display:flex;flex-direction:column}
+button{cursor:pointer}
 
-  #dropzone{border:2px dashed var(--blue);border-radius:12px;background:#eff6ff;
-    padding:40px 20px;text-align:center;cursor:pointer;transition:.2s}
-  #dropzone.over{background:#dbeafe;border-color:#1d4ed8}
-  #dropzone p{color:var(--blue);font-weight:600;font-size:1.05rem;margin-bottom:6px}
-  #dropzone small{color:var(--muted)}
-  #file-input{display:none}
+/* ── App shell ──────────────────────────────────────────────────────────── */
+.app{display:flex;flex:1;height:100vh;overflow:hidden}
 
-  #file-list{margin-top:18px;display:flex;flex-wrap:wrap;gap:10px}
-  .file-chip{display:flex;align-items:center;gap:8px;background:var(--card);
-    border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:.85rem}
-  .file-chip .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
-  .file-chip button{background:none;border:none;cursor:pointer;color:var(--muted);font-size:1rem;line-height:1;padding:0 2px}
-  .file-chip button:hover{color:#dc2626}
+/* ── Sidebar ────────────────────────────────────────────────────────────── */
+.sidebar{width:280px;min-width:280px;background:var(--navy);color:#e2e8f0;
+  display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.sidebar-header{padding:20px 20px 16px;border-bottom:1px solid rgba(255,255,255,.07)}
+.sidebar-logo{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+.sidebar-logo svg{flex-shrink:0}
+.sidebar-logo h1{font-size:1.1rem;font-weight:700;color:#f8fafc;letter-spacing:.01em}
+.sidebar-sub{font-size:.72rem;color:var(--muted2);padding-left:34px}
 
-  .controls{margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-  .btn{padding:8px 18px;border-radius:6px;border:none;cursor:pointer;font-size:.9rem;font-weight:600;transition:.15s}
-  .btn-primary{background:var(--blue);color:#fff}
-  .btn-primary:hover{background:#1d4ed8}
-  .btn-green{background:var(--green);color:#fff}
-  .btn-green:hover{background:#15803d}
-  .btn-secondary{background:var(--card);color:var(--navy);border:1px solid var(--border)}
-  .btn-secondary:hover{background:#f1f5f9}
-  #status{font-size:.85rem;color:var(--muted);align-self:center}
+.sidebar-section{padding:14px 16px 8px;font-size:.68rem;font-weight:700;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--muted2)}
 
-  .plot-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:24px}
-  @media(max-width:760px){.plot-grid{grid-template-columns:1fr}}
-  .plot-card{background:var(--card);border:1px solid var(--border);border-radius:10px;
-    padding:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
-  .plot-card h3{font-size:.9rem;color:var(--navy);margin-bottom:8px;font-weight:600}
-  .plot-wrap{width:100%;height:340px}
+/* Drop zone */
+.dropzone{margin:0 12px 12px;border:1.5px dashed rgba(59,130,246,.5);
+  border-radius:var(--radius);background:rgba(59,130,246,.06);
+  padding:20px 12px;text-align:center;cursor:pointer;transition:.2s}
+.dropzone:hover,.dropzone.over{border-color:var(--accent);background:rgba(59,130,246,.12)}
+.dropzone-icon{font-size:1.6rem;margin-bottom:6px;opacity:.7}
+.dropzone p{font-size:.8rem;color:#93c5fd;font-weight:600;margin-bottom:3px}
+.dropzone small{font-size:.68rem;color:var(--muted2);line-height:1.4;display:block}
+#file-input{display:none}
 
-  /* Summary table */
-  .summary-card{background:var(--card);border:1px solid var(--border);border-radius:10px;
-    padding:20px;margin-top:24px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
-  .summary-card h3{font-size:1rem;font-weight:700;color:var(--navy);margin-bottom:14px;
-    display:flex;justify-content:space-between;align-items:center}
-  .tbl-wrap{overflow-x:auto}
-  table{width:100%;border-collapse:collapse;font-size:.83rem;white-space:nowrap}
-  thead th{background:var(--navy);color:#fff;padding:8px 12px;text-align:left;font-weight:600}
-  tbody td{padding:7px 12px;border-bottom:1px solid #f1f5f9}
-  tbody tr:hover td{background:#f8fafc}
-  tbody tr:last-child td{border-bottom:none}
-  .qual-good{color:var(--green);font-weight:600}
-  .qual-ok{color:#d97706;font-weight:600}
-  .qual-bad{color:#dc2626;font-weight:600}
+/* File list */
+.file-list{flex:1;overflow-y:auto;padding:0 12px 12px}
+.file-list::-webkit-scrollbar{width:4px}
+.file-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:4px}
+.file-item{display:flex;align-items:center;gap:8px;padding:8px 10px;
+  border-radius:8px;margin-bottom:4px;background:rgba(255,255,255,.04);
+  border:1px solid rgba(255,255,255,.06);transition:.15s;font-size:.8rem}
+.file-item:hover{background:rgba(255,255,255,.08)}
+.file-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.file-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#cbd5e1}
+.file-pts{font-size:.68rem;color:var(--muted2);flex-shrink:0;margin-right:2px}
+.file-remove{background:none;border:none;color:var(--muted2);font-size:.9rem;
+  padding:2px 4px;border-radius:4px;line-height:1;transition:.15s}
+.file-remove:hover{color:#f87171;background:rgba(239,68,68,.15)}
+.no-files{text-align:center;color:var(--muted2);font-size:.78rem;padding:20px 0}
 
-  /* Circuit diagram legend */
-  .circuit-label{font-size:.75rem;color:var(--muted);margin-top:8px}
+/* Sidebar buttons */
+.sidebar-actions{padding:12px 16px;border-top:1px solid rgba(255,255,255,.07);display:flex;flex-direction:column;gap:8px}
+.btn-sidebar{width:100%;padding:9px 14px;border-radius:8px;border:none;
+  font-size:.85rem;font-weight:600;display:flex;align-items:center;
+  justify-content:center;gap:8px;transition:.15s}
+.btn-plot{background:var(--accent);color:#fff}
+.btn-plot:hover:not(:disabled){background:var(--accent2)}
+.btn-plot:disabled{opacity:.5;cursor:not-allowed}
+.btn-fit{background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.3)}
+.btn-fit:hover:not(:disabled){background:rgba(16,185,129,.25)}
+.btn-fit:disabled{opacity:.4;cursor:not-allowed}
+.btn-clear-s{background:rgba(255,255,255,.06);color:#94a3b8;border:1px solid rgba(255,255,255,.08)}
+.btn-clear-s:hover{background:rgba(255,255,255,.1);color:#cbd5e1}
 
-  .err{background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;
-    padding:10px 14px;color:#dc2626;font-size:.85rem;margin-top:12px}
+/* ── Main area ──────────────────────────────────────────────────────────── */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+
+/* Top bar with tabs */
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);
+  padding:0 24px;display:flex;align-items:center;gap:0;flex-shrink:0}
+.tab{padding:14px 18px;font-size:.85rem;font-weight:600;color:var(--muted);
+  border:none;background:none;border-bottom:2px solid transparent;
+  transition:.15s;white-space:nowrap}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent2);border-bottom-color:var(--accent2)}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+#status-badge{font-size:.78rem;padding:4px 10px;border-radius:20px;
+  background:var(--surface2);border:1px solid var(--border);color:var(--muted)}
+#status-badge.ok{background:#f0fdf4;border-color:#bbf7d0;color:#15803d}
+#status-badge.busy{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}
+#status-badge.err{background:#fef2f2;border-color:#fecaca;color:#dc2626}
+.btn-csv-top{padding:6px 14px;border-radius:6px;font-size:.8rem;font-weight:600;
+  background:var(--surface);border:1px solid var(--border);color:var(--text);
+  display:none;transition:.15s}
+.btn-csv-top:hover{background:var(--surface2)}
+
+/* Content panels */
+.content{flex:1;overflow-y:auto;padding:20px 24px}
+.content::-webkit-scrollbar{width:6px}
+.content::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
+
+.panel{display:none}
+.panel.active{display:block}
+
+/* Empty state */
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:60vh;color:var(--muted2);text-align:center}
+.empty-state svg{opacity:.25;margin-bottom:16px}
+.empty-state h2{font-size:1.1rem;color:var(--muted);margin-bottom:6px}
+.empty-state p{font-size:.85rem;max-width:320px}
+
+/* Plot grid */
+.plot-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.plot-card{background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:16px 14px 10px;
+  box-shadow:var(--shadow)}
+.plot-card.wide{grid-column:1/-1}
+.plot-title{font-size:.82rem;font-weight:700;color:var(--navy);margin-bottom:4px;
+  display:flex;align-items:center;gap:8px}
+.plot-title .badge{font-size:.67rem;padding:2px 7px;border-radius:10px;
+  background:#eff6ff;color:var(--accent2);font-weight:600}
+.plot-wrap{width:100%;height:320px}
+
+/* Fit badge on Nyquist */
+.fit-note{font-size:.72rem;color:var(--muted2);margin-bottom:6px}
+.fit-note b{color:var(--accent2)}
+
+/* ── Fit results panel ──────────────────────────────────────────────────── */
+.fit-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
+.fit-card{background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:18px;box-shadow:var(--shadow)}
+.fit-card-header{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.fit-dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}
+.fit-card-header h3{font-size:.92rem;font-weight:700;color:var(--text);flex:1;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fit-quality{font-size:.75rem;font-weight:700;padding:3px 9px;border-radius:10px}
+.fq-good{background:#dcfce7;color:#15803d}
+.fq-ok{background:#fef3c7;color:#92400e}
+.fq-bad{background:#fee2e2;color:#b91c1c}
+
+/* Circuit SVG area */
+.circuit-svg-wrap{background:var(--surface2);border:1px solid var(--border);
+  border-radius:8px;padding:12px;margin-bottom:14px;text-align:center}
+.circuit-svg-wrap svg{max-width:100%}
+
+/* Parameter grid */
+.param-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.param-item{background:var(--surface2);border:1px solid var(--border);
+  border-radius:7px;padding:9px 11px}
+.param-label{font-size:.68rem;color:var(--muted);font-weight:600;
+  text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}
+.param-value{font-size:.9rem;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
+.param-unit{font-size:.72rem;color:var(--muted);font-weight:400;margin-left:3px}
+.no-fit-msg{text-align:center;color:var(--muted2);font-size:.85rem;padding:30px}
+
+/* ── Summary panel ──────────────────────────────────────────────────────── */
+.summary-wrap{background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+.summary-header{padding:14px 18px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between}
+.summary-header h3{font-size:.92rem;font-weight:700;color:var(--text)}
+.tbl-scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.8rem;white-space:nowrap}
+thead th{background:var(--navy);color:#e2e8f0;padding:9px 14px;
+  text-align:left;font-weight:600;font-size:.75rem;letter-spacing:.02em}
+thead th:first-child{border-radius:0}
+tbody td{padding:8px 14px;border-bottom:1px solid var(--border)}
+tbody tr:nth-child(even) td{background:var(--surface2)}
+tbody tr:hover td{background:#eff6ff}
+tbody tr:last-child td{border-bottom:none}
+.q-good{color:var(--green);font-weight:700}
+.q-ok{color:var(--amber);font-weight:700}
+.q-bad{color:var(--red);font-weight:700}
+.num{font-variant-numeric:tabular-nums}
+
+/* ── Toast ──────────────────────────────────────────────────────────────── */
+#toast-container{position:fixed;bottom:24px;right:24px;display:flex;
+  flex-direction:column-reverse;gap:8px;z-index:9999;pointer-events:none}
+.toast{padding:10px 16px;border-radius:8px;font-size:.82rem;font-weight:600;
+  box-shadow:var(--shadow-lg);pointer-events:auto;
+  animation:slideIn .25s ease;max-width:340px;display:flex;align-items:center;gap:8px}
+.toast-info{background:var(--navy);color:#e2e8f0}
+.toast-ok{background:#052e16;color:#86efac;border:1px solid #166534}
+.toast-err{background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d}
+@keyframes slideIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+/* ── Spinner ────────────────────────────────────────────────────────────── */
+.spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,.3);
+  border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+@media(max-width:820px){
+  .sidebar{width:240px;min-width:240px}
+  .plot-grid{grid-template-columns:1fr}
+  .plot-card.wide{grid-column:1}
+}
 </style>
 </head>
 <body>
+<div class="app">
 
-<header>
-  <div>
-    <h1>EIS Viewer</h1>
-    <span>Nyquist &amp; Bode · Equivalent circuit fitting · Batch summary</span>
+<!-- ═══ SIDEBAR ══════════════════════════════════════════════════════════ -->
+<aside class="sidebar">
+  <div class="sidebar-header">
+    <div class="sidebar-logo">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+        <path d="M3 12 Q6 4 9 12 Q12 20 15 12 Q18 4 21 12" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" fill="none"/>
+        <circle cx="3" cy="12" r="1.5" fill="#3b82f6"/>
+        <circle cx="21" cy="12" r="1.5" fill="#3b82f6"/>
+      </svg>
+      <h1>EIS Viewer</h1>
+    </div>
+    <div class="sidebar-sub">Impedance Analysis Tool</div>
   </div>
-</header>
 
-<div class="main">
-  <div id="dropzone">
-    <p>Drop EIS files here or click to browse</p>
-    <small>BioLogic .mpt &nbsp;|&nbsp; Gamry .dta &nbsp;|&nbsp; Zahner .ism &nbsp;|&nbsp; Hioki / Neware CSV &nbsp;|&nbsp; Excel .xlsx</small>
+  <div class="sidebar-section">Files</div>
+
+  <div class="dropzone" id="dropzone">
+    <div class="dropzone-icon">⊕</div>
+    <p>Drop files or click to browse</p>
+    <small>.mpt .dta .ism .csv .xlsx</small>
     <input type="file" id="file-input" multiple>
   </div>
 
-  <div id="file-list"></div>
-
-  <div class="controls">
-    <button class="btn btn-primary"   id="btn-plot">Plot</button>
-    <button class="btn btn-green"     id="btn-fit" style="display:none">Fit Circuits</button>
-    <button class="btn btn-secondary" id="btn-clear">Clear all</button>
-    <span id="status"></span>
+  <div class="file-list" id="file-list">
+    <div class="no-files" id="no-files-msg">No files loaded</div>
   </div>
-  <div id="error-box"></div>
 
-  <div class="plot-grid" id="plot-grid" style="display:none">
-    <div class="plot-card" style="grid-column:1/-1">
-      <h3>Nyquist Plot — Z′ vs −Z″</h3>
-      <div class="circuit-label" id="circuit-label" style="display:none">
-        Fitted model: <b>L + R<sub>s</sub> + (R<sub>ct</sub> + W) ∥ CPE</b> &nbsp;(dashed lines)
+  <div class="sidebar-actions">
+    <button class="btn-sidebar btn-plot" id="btn-plot">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+        <polygon points="3,2 12,7 3,12" fill="currentColor"/>
+      </svg>
+      Plot
+    </button>
+    <button class="btn-sidebar btn-fit" id="btn-fit" disabled>
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+        <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M4 9 Q5.5 4 7 7 Q8.5 10 10 5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+      </svg>
+      Fit Circuits
+    </button>
+    <button class="btn-sidebar btn-clear-s" id="btn-clear">Clear All</button>
+  </div>
+</aside>
+
+<!-- ═══ MAIN ══════════════════════════════════════════════════════════════ -->
+<div class="main">
+  <!-- Top bar / tabs -->
+  <div class="topbar">
+    <button class="tab active" data-panel="plots">Plots</button>
+    <button class="tab" data-panel="fit-results">Fit Results</button>
+    <button class="tab" data-panel="summary">Summary</button>
+    <div class="topbar-right">
+      <span id="status-badge">Ready</span>
+      <button class="btn-csv-top" id="btn-csv">↓ Export CSV</button>
+    </div>
+  </div>
+
+  <!-- Content -->
+  <div class="content">
+
+    <!-- ── Plots panel ── -->
+    <div class="panel active" id="panel-plots">
+      <div id="empty-plots" class="empty-state">
+        <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+          <rect x="8" y="40" width="10" height="16" rx="2" fill="#3b82f6"/>
+          <rect x="22" y="28" width="10" height="28" rx="2" fill="#3b82f6"/>
+          <rect x="36" y="18" width="10" height="38" rx="2" fill="#3b82f6"/>
+          <rect x="50" y="32" width="10" height="24" rx="2" fill="#3b82f6"/>
+        </svg>
+        <h2>No data loaded</h2>
+        <p>Drop EIS files in the sidebar and click Plot to visualise impedance spectra.</p>
       </div>
-      <div class="plot-wrap" id="plt-nyquist"></div>
+      <div class="plot-grid" id="plot-grid" style="display:none">
+        <div class="plot-card wide">
+          <div class="plot-title">
+            Nyquist Plot
+            <span class="badge">Z′ vs −Z″</span>
+          </div>
+          <div class="fit-note" id="fit-note" style="display:none">
+            Dashed lines — fitted model: <b>L + R<sub>s</sub> + (R<sub>ct</sub> + W) ∥ CPE</b>
+          </div>
+          <div class="plot-wrap" id="plt-nyquist"></div>
+        </div>
+        <div class="plot-card">
+          <div class="plot-title">Bode Magnitude<span class="badge">|Z| vs f</span></div>
+          <div class="plot-wrap" id="plt-bode-mag"></div>
+        </div>
+        <div class="plot-card">
+          <div class="plot-title">Bode Phase<span class="badge">θ vs f</span></div>
+          <div class="plot-wrap" id="plt-bode-phase"></div>
+        </div>
+        <div class="plot-card">
+          <div class="plot-title">Z Components<span class="badge">Z′ &amp; Z″ vs f</span></div>
+          <div class="plot-wrap" id="plt-components"></div>
+        </div>
+      </div>
     </div>
-    <div class="plot-card">
-      <h3>Bode — |Z| vs Frequency</h3>
-      <div class="plot-wrap" id="plt-bode-mag"></div>
-    </div>
-    <div class="plot-card">
-      <h3>Bode — Phase vs Frequency</h3>
-      <div class="plot-wrap" id="plt-bode-phase"></div>
-    </div>
-    <div class="plot-card">
-      <h3>Z′ &amp; Z″ vs Frequency</h3>
-      <div class="plot-wrap" id="plt-components"></div>
-    </div>
-  </div>
 
-  <!-- Batch summary table -->
-  <div class="summary-card" id="summary-card" style="display:none">
-    <h3>
-      Batch Summary
-      <button class="btn btn-secondary" id="btn-csv" style="font-size:.8rem;padding:5px 12px">
-        Download CSV
-      </button>
-    </h3>
-    <div class="tbl-wrap">
-      <table id="summary-table">
-        <thead>
-          <tr>
-            <th>#</th><th>File</th><th>Points</th>
-            <th>f max (Hz)</th><th>f min (Hz)</th>
-            <th>|Z| @ f_max (Ω)</th><th>|Z| @ f_min (Ω)</th>
-            <th>R<sub>s</sub> est. (Ω)</th>
-            <th>R<sub>ct</sub> est. (Ω)</th>
-            <th>R<sub>s</sub> fit (Ω)</th>
-            <th>R<sub>ct</sub> fit (Ω)</th>
-            <th>L fit (nH)</th>
-            <th>CPE-Q</th><th>CPE-n</th>
-            <th>Warburg σ</th>
-            <th>Fit error (%)</th>
-          </tr>
-        </thead>
-        <tbody id="summary-body"></tbody>
-      </table>
+    <!-- ── Fit results panel ── -->
+    <div class="panel" id="panel-fit-results">
+      <div id="empty-fit" class="empty-state">
+        <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
+          <circle cx="28" cy="28" r="20" stroke="#3b82f6" stroke-width="2"/>
+          <path d="M14 36 Q18 20 22 28 Q26 36 30 24 Q34 12 42 20" stroke="#3b82f6" stroke-width="2" fill="none" stroke-linecap="round"/>
+        </svg>
+        <h2>No fit results yet</h2>
+        <p>Load files, click Plot, then click Fit Circuits to run equivalent circuit fitting.</p>
+      </div>
+      <div class="fit-grid" id="fit-grid"></div>
     </div>
-  </div>
-</div>
+
+    <!-- ── Summary panel ── -->
+    <div class="panel" id="panel-summary">
+      <div id="empty-summary" class="empty-state">
+        <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
+          <rect x="8" y="8" width="40" height="40" rx="4" stroke="#3b82f6" stroke-width="2"/>
+          <line x1="8" y1="20" x2="48" y2="20" stroke="#3b82f6" stroke-width="1.5"/>
+          <line x1="8" y1="32" x2="48" y2="32" stroke="#3b82f6" stroke-width="1"/>
+          <line x1="24" y1="8" x2="24" y2="48" stroke="#3b82f6" stroke-width="1"/>
+        </svg>
+        <h2>No data yet</h2>
+        <p>Load and plot files to see the batch summary table.</p>
+      </div>
+      <div class="summary-wrap" id="summary-wrap" style="display:none">
+        <div class="summary-header">
+          <h3>Batch Summary</h3>
+        </div>
+        <div class="tbl-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th><th>File</th><th>Points</th>
+                <th>f max (Hz)</th><th>f min (Hz)</th>
+                <th>|Z| @ f_max (Ω)</th><th>|Z| @ f_min (Ω)</th>
+                <th>R<sub>s</sub> est.</th><th>R<sub>ct</sub> est.</th>
+                <th>R<sub>s</sub> fit</th><th>R<sub>ct</sub> fit</th>
+                <th>L fit (nH)</th><th>CPE-Q</th><th>CPE-n</th>
+                <th>Warburg σ</th><th>Fit error</th>
+              </tr>
+            </thead>
+            <tbody id="summary-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /main -->
+</div><!-- /app -->
+
+<div id="toast-container"></div>
 
 <script>
 const PALETTE = [
-  "#2563eb","#dc2626","#16a34a","#d97706","#7c3aed",
-  "#0891b2","#db2777","#65a30d","#ea580c","#0f766e"
+  "#3b82f6","#ef4444","#10b981","#f59e0b","#8b5cf6",
+  "#06b6d4","#ec4899","#84cc16","#f97316","#14b8a6"
 ];
 
-let fileQueue = [];
-let idCounter = 0;
-let currentDatasets = [];
-let currentFits = {};
+let fileQueue = [], idCounter = 0;
+let currentDatasets = [], currentFits = {};
 
-const dropzone    = document.getElementById("dropzone");
-const fileInput   = document.getElementById("file-input");
-const fileList    = document.getElementById("file-list");
-const btnPlot     = document.getElementById("btn-plot");
-const btnFit      = document.getElementById("btn-fit");
-const btnClear    = document.getElementById("btn-clear");
-const btnCsv      = document.getElementById("btn-csv");
-const status      = document.getElementById("status");
-const errorBox    = document.getElementById("error-box");
-const plotGrid    = document.getElementById("plot-grid");
-const summaryCard = document.getElementById("summary-card");
-const summaryBody = document.getElementById("summary-body");
-const circuitLabel= document.getElementById("circuit-label");
+// ── DOM refs ──────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const dropzone    = $("dropzone");
+const fileInput   = $("file-input");
+const fileList    = $("file-list");
+const noFilesMsg  = $("no-files-msg");
+const btnPlot     = $("btn-plot");
+const btnFit      = $("btn-fit");
+const btnClear    = $("btn-clear");
+const btnCsv      = $("btn-csv");
+const statusBadge = $("status-badge");
+const plotGrid    = $("plot-grid");
+const emptyPlots  = $("empty-plots");
+const fitGrid     = $("fit-grid");
+const emptyFit    = $("empty-fit");
+const summaryWrap = $("summary-wrap");
+const emptySummary= $("empty-summary");
+const summaryBody = $("summary-body");
+const fitNote     = $("fit-note");
 
+// ── Tabs ──────────────────────────────────────────────────────────────────
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+    tab.classList.add("active");
+    $("panel-" + tab.dataset.panel).classList.add("active");
+  });
+});
+
+// ── Toast ─────────────────────────────────────────────────────────────────
+function toast(msg, type="info", duration=3000) {
+  const tc = $("toast-container");
+  const t  = document.createElement("div");
+  t.className = `toast toast-${type}`;
+  const icon = type==="ok" ? "✓" : type==="err" ? "✕" : "ℹ";
+  t.innerHTML = `<span>${icon}</span><span>${msg}</span>`;
+  tc.appendChild(t);
+  setTimeout(() => { t.style.opacity="0"; t.style.transition="opacity .3s";
+    setTimeout(()=>t.remove(),300); }, duration);
+}
+
+function setStatus(msg, type="") {
+  statusBadge.textContent = msg;
+  statusBadge.className = "ok busy err".includes(type) ? type : "";
+  statusBadge.className = type ? type : "";
+}
+
+// ── Drop & file management ────────────────────────────────────────────────
 dropzone.addEventListener("click", () => fileInput.click());
 dropzone.addEventListener("dragover",  e => { e.preventDefault(); dropzone.classList.add("over"); });
 dropzone.addEventListener("dragleave", ()  => dropzone.classList.remove("over"));
 dropzone.addEventListener("drop", e => {
-  e.preventDefault(); dropzone.classList.remove("over"); addFiles(e.dataTransfer.files);
+  e.preventDefault(); dropzone.classList.remove("over");
+  addFiles(e.dataTransfer.files);
 });
-fileInput.addEventListener("change", () => addFiles(fileInput.files));
+fileInput.addEventListener("change", () => { addFiles(fileInput.files); fileInput.value=""; });
 
 function addFiles(files) {
   for (const f of files) {
-    const id    = ++idCounter;
-    const color = PALETTE[fileQueue.length % PALETTE.length];
-    fileQueue.push({ file: f, name: f.name, color, id });
+    if (fileQueue.find(q => q.name === f.name)) continue; // dedupe
+    fileQueue.push({ file:f, name:f.name, color:PALETTE[fileQueue.length % PALETTE.length], id:++idCounter });
   }
-  renderFileList(); fileInput.value = "";
+  renderFileList();
 }
 
 function removeFile(id) {
@@ -569,270 +813,352 @@ function removeFile(id) {
 }
 
 function renderFileList() {
-  fileList.innerHTML = "";
+  // Remove all chips
+  fileList.querySelectorAll(".file-item").forEach(e => e.remove());
+  noFilesMsg.style.display = fileQueue.length ? "none" : "";
   fileQueue.forEach(f => {
-    const chip = document.createElement("div");
-    chip.className = "file-chip";
-    chip.innerHTML = `<span class="dot" style="background:${f.color}"></span>
-      <span>${f.name}</span>
-      <button title="Remove" onclick="removeFile(${f.id})">×</button>`;
-    fileList.appendChild(chip);
+    const el = document.createElement("div");
+    el.className = "file-item";
+    el.innerHTML = `<span class="file-dot" style="background:${f.color}"></span>
+      <span class="file-name" title="${f.name}">${f.name}</span>
+      <span class="file-pts" id="pts-${f.id}"></span>
+      <button class="file-remove" onclick="removeFile(${f.id})" title="Remove">✕</button>`;
+    fileList.appendChild(el);
   });
 }
 
-btnClear.addEventListener("click", () => {
-  fileQueue = []; currentDatasets = []; currentFits = {};
-  renderFileList();
-  plotGrid.style.display = summaryCard.style.display = "none";
-  btnFit.style.display = "none";
-  circuitLabel.style.display = "none";
-  errorBox.innerHTML = ""; status.textContent = "";
-});
-
-// ── PLOT ───────────────────────────────────────────────────────────────────
+// ── PLOT ──────────────────────────────────────────────────────────────────
 btnPlot.addEventListener("click", async () => {
-  if (!fileQueue.length) { status.textContent = "No files selected."; return; }
-  status.textContent = "Parsing…";
-  errorBox.innerHTML = "";
-  btnPlot.disabled   = true;
+  if (!fileQueue.length) { toast("No files selected", "err"); return; }
+
+  btnPlot.innerHTML = '<span class="spinner"></span> Parsing…';
+  btnPlot.disabled  = true;
+  setStatus("Parsing…", "busy");
 
   const datasets = [], errors = [];
   for (const entry of fileQueue) {
     const fd = new FormData();
     fd.append("file", entry.file, entry.name);
     try {
-      const res  = await fetch("/parse", { method: "POST", body: fd });
+      const res  = await fetch("/parse", { method:"POST", body:fd });
       const json = await res.json();
       if (json.error) { errors.push(`${entry.name}: ${json.error}`); continue; }
-      if (!json.points.length) { errors.push(`${entry.name}: no data found`); continue; }
-      datasets.push({ name: entry.name, color: entry.color, points: json.points });
+      datasets.push({ name:entry.name, color:entry.color, points:json.points });
+      const el = $("pts-" + entry.id);
+      if (el) el.textContent = json.points.length + " pts";
     } catch(e) { errors.push(`${entry.name}: network error`); }
   }
 
-  btnPlot.disabled = false;
-  if (errors.length) errorBox.innerHTML = `<div class="err">${errors.join("<br>")}</div>`;
-  if (!datasets.length) { status.textContent = "No data plotted."; return; }
+  btnPlot.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14"><polygon points="3,2 12,7 3,12" fill="currentColor"/></svg> Plot`;
+  btnPlot.disabled  = false;
+
+  if (errors.length) errors.forEach(e => toast(e, "err", 5000));
+  if (!datasets.length) { setStatus("No data", "err"); return; }
 
   currentDatasets = datasets;
   currentFits     = {};
-  circuitLabel.style.display = "none";
-  status.textContent = `Plotted ${datasets.length} dataset(s).`;
-  btnFit.style.display = "";
+  fitNote.style.display = "none";
+  btnFit.disabled = false;
+  btnCsv.style.display  = "";
+  setStatus(`${datasets.length} file${datasets.length>1?"s":""} plotted`, "ok");
+  toast(`Plotted ${datasets.length} dataset${datasets.length>1?"s":""}`, "ok");
+
   buildPlots(datasets, {});
   buildSummaryTable(datasets, {});
+
+  // Switch to plots tab
+  document.querySelector('[data-panel="plots"]').click();
 });
 
-// ── FIT CIRCUITS ───────────────────────────────────────────────────────────
+// ── FIT ───────────────────────────────────────────────────────────────────
 btnFit.addEventListener("click", async () => {
   if (!currentDatasets.length) return;
-  status.textContent = "Fitting circuits…";
-  btnFit.disabled    = true;
+  btnFit.innerHTML = '<span class="spinner"></span> Fitting…';
+  btnFit.disabled  = true;
+  setStatus("Fitting circuits…", "busy");
 
   for (const ds of currentDatasets) {
     try {
       const res  = await fetch("/fit", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ points: ds.points })
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ points: ds.points })
       });
       const json = await res.json();
       if (!json.error) currentFits[ds.name] = json;
     } catch(e) {}
   }
 
-  btnFit.disabled = false;
-  circuitLabel.style.display = "";
-  status.textContent = `Fitted ${Object.keys(currentFits).length} dataset(s).`;
+  const n = Object.keys(currentFits).length;
+  btnFit.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 9 Q5.5 4 7 7 Q8.5 10 10 5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg> Fit Circuits`;
+  btnFit.disabled  = false;
+  fitNote.style.display = "";
+  setStatus(`${n} circuit${n>1?"s":""} fitted`, "ok");
+  toast(`Fitted ${n} equivalent circuit${n>1?"s":""}`, "ok");
+
   buildPlots(currentDatasets, currentFits);
+  buildFitCards(currentDatasets, currentFits);
   buildSummaryTable(currentDatasets, currentFits);
+
+  document.querySelector('[data-panel="fit-results"]').click();
 });
 
-// ── PLOTS ──────────────────────────────────────────────────────────────────
+// ── Clear ─────────────────────────────────────────────────────────────────
+btnClear.addEventListener("click", () => {
+  fileQueue = []; currentDatasets = []; currentFits = {};
+  renderFileList();
+  plotGrid.style.display = "none"; emptyPlots.style.display = "";
+  fitGrid.innerHTML = ""; emptyFit.style.display = "";
+  summaryWrap.style.display = "none"; emptySummary.style.display = "";
+  fitNote.style.display = "none";
+  btnFit.disabled = true; btnCsv.style.display = "none";
+  setStatus("Ready");
+  document.querySelector('[data-panel="plots"]').click();
+});
+
+// ── Plot building ─────────────────────────────────────────────────────────
 function sortByFreq(pts) { return [...pts].sort((a,b) => b.freq - a.freq); }
 
-const LAYOUT_BASE = {
-  margin: {l:56,r:20,t:20,b:50},
-  paper_bgcolor:"#fff", plot_bgcolor:"#f8fafc",
-  font: {family:"system-ui,sans-serif", size:12},
-  legend:{orientation:"h", y:-0.18},
-  hovermode:"closest"
+const LAY = {
+  margin:{l:52,r:16,t:12,b:46},
+  paper_bgcolor:"#fff", plot_bgcolor:"#fafbff",
+  font:{family:"Inter,system-ui,sans-serif",size:11.5},
+  legend:{orientation:"h",y:-0.22,font:{size:10.5}},
+  hovermode:"closest",
+  xaxis:{gridcolor:"#f1f5f9",zeroline:false,linecolor:"#e2e8f0",tickfont:{size:10.5}},
+  yaxis:{gridcolor:"#f1f5f9",zeroline:false,linecolor:"#e2e8f0",tickfont:{size:10.5}}
 };
 
-function hexToRgba(hex, a) {
-  const r = parseInt(hex.slice(1,3),16);
-  const g = parseInt(hex.slice(3,5),16);
-  const b = parseInt(hex.slice(5,7),16);
-  return `rgba(${r},${g},${b},${a})`;
-}
-
 function buildPlots(datasets, fits) {
-  plotGrid.style.display = "";
+  emptyPlots.style.display = "none";
+  plotGrid.style.display   = "";
 
   // Nyquist
-  const nyqTraces = [];
+  const nyqT = [];
   datasets.forEach(ds => {
     const s = sortByFreq(ds.points);
-    nyqTraces.push({
-      x: s.map(p => p.zre), y: s.map(p => -p.zim),
-      text: s.map(p => `${p.freq.toFixed(3)} Hz`),
-      mode:"lines+markers", name: ds.name,
-      line:{color:ds.color,width:1.5}, marker:{size:4,color:ds.color},
-      hovertemplate:"Z′=%{x:.4g} Ω<br>−Z″=%{y:.4g} Ω<br>%{text}<extra>%{fullData.name}</extra>"
+    nyqT.push({ x:s.map(p=>p.zre), y:s.map(p=>-p.zim),
+      text:s.map(p=>`${p.freq.toFixed(3)} Hz`),
+      mode:"lines+markers", name:ds.name,
+      line:{color:ds.color,width:2}, marker:{size:4.5,color:ds.color},
+      hovertemplate:"Z′ = %{x:.4g} Ω<br>−Z″ = %{y:.4g} Ω<br>%{text}<extra>%{fullData.name}</extra>"
     });
     if (fits[ds.name]) {
       const c = fits[ds.name].curve;
-      nyqTraces.push({
-        x: c.map(p => p.zre), y: c.map(p => -p.zim),
-        mode:"lines", name:`${ds.name} (fit)`, showlegend:false,
-        line:{color:ds.color, width:2, dash:"dash"},
-        hoverinfo:"skip"
-      });
+      nyqT.push({ x:c.map(p=>p.zre), y:c.map(p=>-p.zim), mode:"lines",
+        name:`${ds.name} fit`, showlegend:false,
+        line:{color:ds.color,width:2,dash:"dash"}, hoverinfo:"skip" });
     }
   });
-  Plotly.newPlot("plt-nyquist", nyqTraces, {
-    ...LAYOUT_BASE,
-    xaxis:{title:"Z′ (Ω)", zeroline:true, zerolinecolor:"#94a3b8"},
-    yaxis:{title:"−Z″ (Ω)", zeroline:true, zerolinecolor:"#94a3b8", scaleanchor:"x", scaleratio:1}
-  }, {responsive:true, displayModeBar:true});
+  Plotly.newPlot("plt-nyquist", nyqT, {
+    ...LAY,
+    xaxis:{...LAY.xaxis,title:"Z′ (Ω)"},
+    yaxis:{...LAY.yaxis,title:"−Z″ (Ω)",scaleanchor:"x",scaleratio:1}
+  }, {responsive:true,displayModeBar:true,displaylogo:false});
 
-  // Bode magnitude
-  const magTraces = datasets.map(ds => {
+  // Bode |Z|
+  Plotly.newPlot("plt-bode-mag", datasets.map(ds => {
     const s = sortByFreq(ds.points);
-    return {
-      x:s.map(p=>p.freq), y:s.map(p=>p.zmag), mode:"lines+markers", name:ds.name,
-      line:{color:ds.color,width:1.5}, marker:{size:4},
-      hovertemplate:"f=%{x:.3g} Hz<br>|Z|=%{y:.4g} Ω<extra>%{fullData.name}</extra>"
-    };
-  });
-  Plotly.newPlot("plt-bode-mag", magTraces, {
-    ...LAYOUT_BASE,
-    xaxis:{title:"Frequency (Hz)",type:"log"},
-    yaxis:{title:"|Z| (Ω)",type:"log"}
-  }, {responsive:true, displayModeBar:true});
+    return { x:s.map(p=>p.freq), y:s.map(p=>p.zmag), mode:"lines+markers", name:ds.name,
+      line:{color:ds.color,width:2}, marker:{size:4.5},
+      hovertemplate:"f = %{x:.3g} Hz<br>|Z| = %{y:.4g} Ω<extra>%{fullData.name}</extra>" };
+  }), {...LAY, xaxis:{...LAY.xaxis,title:"Frequency (Hz)",type:"log"},
+    yaxis:{...LAY.yaxis,title:"|Z| (Ω)",type:"log"}
+  }, {responsive:true,displayModeBar:true,displaylogo:false});
 
   // Bode phase
-  const phTraces = datasets.map(ds => {
+  Plotly.newPlot("plt-bode-phase", datasets.map(ds => {
     const s = sortByFreq(ds.points);
-    return {
-      x:s.map(p=>p.freq), y:s.map(p=>p.phase_deg), mode:"lines+markers", name:ds.name,
-      line:{color:ds.color,width:1.5}, marker:{size:4},
-      hovertemplate:"f=%{x:.3g} Hz<br>Phase=%{y:.2f}°<extra>%{fullData.name}</extra>"
-    };
-  });
-  Plotly.newPlot("plt-bode-phase", phTraces, {
-    ...LAYOUT_BASE,
-    xaxis:{title:"Frequency (Hz)",type:"log"},
-    yaxis:{title:"Phase (°)"}
-  }, {responsive:true, displayModeBar:true});
+    return { x:s.map(p=>p.freq), y:s.map(p=>p.phase_deg), mode:"lines+markers", name:ds.name,
+      line:{color:ds.color,width:2}, marker:{size:4.5},
+      hovertemplate:"f = %{x:.3g} Hz<br>θ = %{y:.2f}°<extra>%{fullData.name}</extra>" };
+  }), {...LAY, xaxis:{...LAY.xaxis,title:"Frequency (Hz)",type:"log"},
+    yaxis:{...LAY.yaxis,title:"Phase (°)"}
+  }, {responsive:true,displayModeBar:true,displaylogo:false});
 
   // Z components
-  const compTraces = [];
+  const compT = [];
   datasets.forEach(ds => {
     const s = sortByFreq(ds.points);
-    compTraces.push({
-      x:s.map(p=>p.freq), y:s.map(p=>p.zre),
-      mode:"lines+markers", name:`Z′ — ${ds.name}`,
-      line:{color:ds.color,width:1.5}, marker:{size:4},
-      hovertemplate:"f=%{x:.3g} Hz<br>Z′=%{y:.4g} Ω<extra>%{fullData.name}</extra>"
-    });
-    compTraces.push({
-      x:s.map(p=>p.freq), y:s.map(p=>-p.zim),
-      mode:"lines+markers", name:`−Z″ — ${ds.name}`,
-      line:{color:ds.color,width:1.5,dash:"dot"}, marker:{size:4,symbol:"triangle-up"},
-      hovertemplate:"f=%{x:.3g} Hz<br>−Z″=%{y:.4g} Ω<extra>%{fullData.name}</extra>"
-    });
+    compT.push({ x:s.map(p=>p.freq), y:s.map(p=>p.zre), mode:"lines+markers",
+      name:`Z′ ${ds.name}`, line:{color:ds.color,width:2}, marker:{size:4.5},
+      hovertemplate:"f = %{x:.3g} Hz<br>Z′ = %{y:.4g} Ω<extra>%{fullData.name}</extra>" });
+    compT.push({ x:s.map(p=>p.freq), y:s.map(p=>-p.zim), mode:"lines+markers",
+      name:`−Z″ ${ds.name}`, line:{color:ds.color,width:2,dash:"dot"},
+      marker:{size:4.5,symbol:"triangle-up"},
+      hovertemplate:"f = %{x:.3g} Hz<br>−Z″ = %{y:.4g} Ω<extra>%{fullData.name}</extra>" });
   });
-  Plotly.newPlot("plt-components", compTraces, {
-    ...LAYOUT_BASE,
-    xaxis:{title:"Frequency (Hz)",type:"log"},
-    yaxis:{title:"Impedance (Ω)"}
-  }, {responsive:true, displayModeBar:true});
+  Plotly.newPlot("plt-components", compT, {
+    ...LAY, xaxis:{...LAY.xaxis,title:"Frequency (Hz)",type:"log"},
+    yaxis:{...LAY.yaxis,title:"Impedance (Ω)"}
+  }, {responsive:true,displayModeBar:true,displaylogo:false});
 }
 
-// ── SUMMARY TABLE ──────────────────────────────────────────────────────────
+// ── Fit result cards ──────────────────────────────────────────────────────
+function fmtSI(v, unit) {
+  if (v == null) return "—";
+  const abs = Math.abs(v);
+  if (abs >= 1)    return v.toFixed(4) + `<span class="param-unit">${unit}</span>`;
+  if (abs >= 1e-3) return (v*1e3).toFixed(4) + `<span class="param-unit">m${unit}</span>`;
+  if (abs >= 1e-6) return (v*1e6).toFixed(4) + `<span class="param-unit">µ${unit}</span>`;
+  return v.toExponential(3) + `<span class="param-unit">${unit}</span>`;
+}
+
+function buildFitCards(datasets, fits) {
+  fitGrid.innerHTML = "";
+  const hasFits = Object.keys(fits).length > 0;
+  emptyFit.style.display = hasFits ? "none" : "";
+  if (!hasFits) return;
+
+  datasets.forEach(ds => {
+    const fit = fits[ds.name];
+    const card = document.createElement("div");
+    card.className = "fit-card";
+
+    const qc  = fit ? (fit.quality_pct < 5 ? "fq-good" : fit.quality_pct < 15 ? "fq-ok" : "fq-bad") : "";
+    const qTxt= fit ? fit.quality_pct.toFixed(1)+"%" : "—";
+
+    card.innerHTML = `
+      <div class="fit-card-header">
+        <span class="fit-dot" style="background:${ds.color}"></span>
+        <h3 title="${ds.name}">${ds.name}</h3>
+        ${fit ? `<span class="fit-quality ${qc}">${qTxt} error</span>` : ""}
+      </div>
+      ${fit ? `
+      <div class="circuit-svg-wrap">
+        <svg viewBox="0 0 340 80" width="300" height="75" font-family="Inter,system-ui" font-size="11">
+          <!-- Wire in / out -->
+          <line x1="0" y1="40" x2="30" y2="40" stroke="#475569" stroke-width="1.5"/>
+          <line x1="310" y1="40" x2="340" y2="40" stroke="#475569" stroke-width="1.5"/>
+          <!-- L -->
+          <path d="M30,40 q5,-9 10,0 q5,-9 10,0 q5,-9 10,0" fill="none" stroke="#3b82f6" stroke-width="1.8"/>
+          <line x1="30" y1="40" x2="30" y2="40" stroke="#3b82f6" stroke-width="1.5"/>
+          <text x="42" y="26" text-anchor="middle" fill="#3b82f6" font-weight="600">L</text>
+          <!-- Rs -->
+          <rect x="70" y="32" width="36" height="16" rx="3" fill="#f8fafc" stroke="#10b981" stroke-width="1.8"/>
+          <text x="88" y="44" text-anchor="middle" fill="#10b981" font-weight="600">Rs</text>
+          <!-- junction -->
+          <line x1="60" y1="40" x2="106" y2="40" stroke="#475569" stroke-width="1.5"/>
+          <line x1="118" y1="40" x2="128" y2="40" stroke="#475569" stroke-width="1.5"/>
+          <circle cx="128" cy="40" r="3" fill="#475569"/>
+          <!-- top branch: Rct + W -->
+          <line x1="128" y1="40" x2="128" y2="15" stroke="#475569" stroke-width="1.5"/>
+          <line x1="128" y1="15" x2="155" y2="15" stroke="#475569" stroke-width="1.5"/>
+          <rect x="155" y="7" width="36" height="16" rx="3" fill="#f8fafc" stroke="#ef4444" stroke-width="1.8"/>
+          <text x="173" y="19" text-anchor="middle" fill="#ef4444" font-weight="600">Rct</text>
+          <line x1="191" y1="15" x2="210" y2="15" stroke="#475569" stroke-width="1.5"/>
+          <!-- W symbol -->
+          <path d="M210,15 l5,8 l5,-8 l5,8 l5,-8" fill="none" stroke="#ef4444" stroke-width="1.8" stroke-linecap="round"/>
+          <text x="223" y="7" text-anchor="middle" fill="#ef4444" font-weight="600" font-size="9">W</text>
+          <line x1="230" y1="15" x2="262" y2="15" stroke="#475569" stroke-width="1.5"/>
+          <line x1="262" y1="15" x2="262" y2="40" stroke="#475569" stroke-width="1.5"/>
+          <!-- bottom branch: CPE -->
+          <line x1="128" y1="40" x2="128" y2="65" stroke="#475569" stroke-width="1.5"/>
+          <line x1="128" y1="65" x2="178" y2="65" stroke="#475569" stroke-width="1.5"/>
+          <line x1="178" y1="57" x2="178" y2="73" stroke="#8b5cf6" stroke-width="2.5"/>
+          <line x1="183" y1="57" x2="183" y2="73" stroke="#8b5cf6" stroke-width="2.5"/>
+          <text x="197" y="69" fill="#8b5cf6" font-weight="600">CPE</text>
+          <line x1="216" y1="65" x2="262" y2="65" stroke="#475569" stroke-width="1.5"/>
+          <line x1="262" y1="65" x2="262" y2="40" stroke="#475569" stroke-width="1.5"/>
+          <!-- out wire -->
+          <line x1="262" y1="40" x2="310" y2="40" stroke="#475569" stroke-width="1.5"/>
+        </svg>
+      </div>
+      <div class="param-grid">
+        <div class="param-item">
+          <div class="param-label">R<sub>s</sub> — Series</div>
+          <div class="param-value">${fmtSI(fit.Rs,"Ω")}</div>
+        </div>
+        <div class="param-item">
+          <div class="param-label">R<sub>ct</sub> — Charge Transfer</div>
+          <div class="param-value">${fmtSI(fit.Rct,"Ω")}</div>
+        </div>
+        <div class="param-item">
+          <div class="param-label">L — Inductance</div>
+          <div class="param-value">${fmtSI(fit.L,"H")}</div>
+        </div>
+        <div class="param-item">
+          <div class="param-label">Warburg σ</div>
+          <div class="param-value">${fit.sigma.toExponential(3)}<span class="param-unit">Ω·s⁻⁰·⁵</span></div>
+        </div>
+        <div class="param-item">
+          <div class="param-label">CPE — Q</div>
+          <div class="param-value">${fit.Q.toExponential(3)}</div>
+        </div>
+        <div class="param-item">
+          <div class="param-label">CPE — n</div>
+          <div class="param-value">${fit.n.toFixed(4)}<span class="param-unit">(0–1)</span></div>
+        </div>
+      </div>` : `<div class="no-fit-msg">Fit failed for this dataset.</div>`}`;
+    fitGrid.appendChild(card);
+  });
+}
+
+// ── Summary table ─────────────────────────────────────────────────────────
 function buildSummaryTable(datasets, fits) {
-  summaryCard.style.display = "";
+  emptySummary.style.display = "none";
+  summaryWrap.style.display  = "";
   summaryBody.innerHTML = "";
 
   datasets.forEach((ds, i) => {
     const pts  = sortByFreq(ds.points);
-    const fmax = pts[0].freq,   fmin = pts[pts.length-1].freq;
-    const zmax = pts[0].zmag,   zmin = pts[pts.length-1].zmag;
-
-    // Estimated Rs: Zre at highest frequency
-    const Rs_est = pts[0].zre;
-    // Estimated Rct: Zre at low-freq zero crossing minus Rs
-    const neg_zim = pts.map(p => -p.zim);
-    const peak_i  = neg_zim.indexOf(Math.max(...neg_zim));
-    const Rct_est = (pts[pts.length-1].zre - Rs_est);
-
+    const fmax = pts[0].freq, fmin = pts[pts.length-1].freq;
+    const Rs_est  = pts[0].zre;
+    const Rct_est = pts[pts.length-1].zre - Rs_est;
     const fit = fits[ds.name];
-    const fmt = (v, d=4) => v == null ? "—" : v.toPrecision(d);
-    const qualClass = fit
-      ? (fit.quality_pct < 5 ? "qual-good" : fit.quality_pct < 15 ? "qual-ok" : "qual-bad")
-      : "";
+    const fmt = (v, d=4) => v==null ? "—" : Number(v).toPrecision(d);
+    const qc  = fit ? (fit.quality_pct<5?"q-good":fit.quality_pct<15?"q-ok":"q-bad") : "";
 
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${i+1}</td>
-      <td><span style="display:inline-block;width:10px;height:10px;border-radius:50%;
-          background:${ds.color};margin-right:6px;vertical-align:middle"></span>${ds.name}</td>
-      <td>${pts.length}</td>
-      <td>${fmax.toFixed(2)}</td>
-      <td>${fmin.toFixed(3)}</td>
-      <td>${fmt(zmax)}</td>
-      <td>${fmt(zmin)}</td>
-      <td>${fmt(Rs_est)}</td>
-      <td>${fmt(Rct_est > 0 ? Rct_est : null)}</td>
-      <td>${fit ? fmt(fit.Rs) : "—"}</td>
-      <td>${fit ? fmt(fit.Rct) : "—"}</td>
-      <td>${fit ? fmt(fit.L * 1e9, 3) : "—"}</td>
-      <td>${fit ? fit.Q.toExponential(2) : "—"}</td>
-      <td>${fit ? fit.n.toFixed(3) : "—"}</td>
-      <td>${fit ? fit.sigma.toExponential(2) : "—"}</td>
-      <td class="${qualClass}">${fit ? fit.quality_pct.toFixed(1)+"%" : "—"}</td>`;
+      <td class="num">${i+1}</td>
+      <td><span style="display:inline-block;width:9px;height:9px;border-radius:50%;
+          background:${ds.color};margin-right:7px;vertical-align:middle"></span>${ds.name}</td>
+      <td class="num">${pts.length}</td>
+      <td class="num">${fmax.toFixed(2)}</td>
+      <td class="num">${fmin.toFixed(3)}</td>
+      <td class="num">${pts[0].zmag.toExponential(3)}</td>
+      <td class="num">${pts[pts.length-1].zmag.toExponential(3)}</td>
+      <td class="num">${Rs_est.toExponential(3)}</td>
+      <td class="num">${Rct_est>0?Rct_est.toExponential(3):"—"}</td>
+      <td class="num">${fit?fmt(fit.Rs):"—"}</td>
+      <td class="num">${fit?fmt(fit.Rct):"—"}</td>
+      <td class="num">${fit?fmt(fit.L*1e9,3):"—"}</td>
+      <td class="num">${fit?fit.Q.toExponential(2):"—"}</td>
+      <td class="num">${fit?fit.n.toFixed(3):"—"}</td>
+      <td class="num">${fit?fit.sigma.toExponential(2):"—"}</td>
+      <td class="num ${qc}">${fit?fit.quality_pct.toFixed(1)+"%":"—"}</td>`;
     summaryBody.appendChild(tr);
   });
 }
 
-// ── CSV DOWNLOAD ───────────────────────────────────────────────────────────
+// ── CSV export ────────────────────────────────────────────────────────────
 btnCsv.addEventListener("click", () => {
   if (!currentDatasets.length) return;
-  const headers = [
-    "File","Points","f_max_Hz","f_min_Hz","|Z|_at_fmax_Ohm","|Z|_at_fmin_Ohm",
-    "Rs_est_Ohm","Rct_est_Ohm",
-    "Rs_fit_Ohm","Rct_fit_Ohm","L_fit_nH","CPE_Q","CPE_n","Warburg_sigma","Fit_error_pct"
-  ];
-  const rows = [headers.join(",")];
-
+  const hdr = ["File","Points","f_max_Hz","f_min_Hz","|Z|_fmax_Ohm","|Z|_fmin_Ohm",
+    "Rs_est_Ohm","Rct_est_Ohm","Rs_fit_Ohm","Rct_fit_Ohm","L_fit_nH",
+    "CPE_Q","CPE_n","Warburg_sigma","Fit_error_pct"];
+  const rows = [hdr.join(",")];
   currentDatasets.forEach(ds => {
-    const pts  = sortByFreq(ds.points);
-    const fmax = pts[0].freq, fmin = pts[pts.length-1].freq;
-    const zmax = pts[0].zmag, zmin = pts[pts.length-1].zmag;
-    const Rs_est  = pts[0].zre;
-    const Rct_est = pts[pts.length-1].zre - Rs_est;
+    const pts = sortByFreq(ds.points);
+    const Rs  = pts[0].zre, Rct = pts[pts.length-1].zre - Rs;
     const fit = currentFits[ds.name];
-
     rows.push([
       `"${ds.name}"`, pts.length,
-      fmax.toFixed(3), fmin.toFixed(4),
-      zmax.toExponential(4), zmin.toExponential(4),
-      Rs_est.toExponential(4), (Rct_est > 0 ? Rct_est : "").toExponential ? Rct_est.toExponential(4) : "",
-      fit ? fit.Rs.toExponential(4) : "",
-      fit ? fit.Rct.toExponential(4) : "",
-      fit ? (fit.L*1e9).toFixed(3) : "",
-      fit ? fit.Q.toExponential(4) : "",
-      fit ? fit.n.toFixed(4) : "",
-      fit ? fit.sigma.toExponential(4) : "",
-      fit ? fit.quality_pct.toFixed(2) : ""
+      pts[0].freq.toFixed(3), pts[pts.length-1].freq.toFixed(4),
+      pts[0].zmag.toExponential(4), pts[pts.length-1].zmag.toExponential(4),
+      Rs.toExponential(4), Rct>0?Rct.toExponential(4):"",
+      fit?fit.Rs.toExponential(4):"", fit?fit.Rct.toExponential(4):"",
+      fit?(fit.L*1e9).toFixed(3):"", fit?fit.Q.toExponential(4):"",
+      fit?fit.n.toFixed(4):"", fit?fit.sigma.toExponential(4):"",
+      fit?fit.quality_pct.toFixed(2):""
     ].join(","));
   });
-
-  const blob = new Blob([rows.join("\n")], {type:"text/csv"});
-  const a    = document.createElement("a");
-  a.href     = URL.createObjectURL(blob);
-  a.download = "EIS_summary.csv";
+  const a = Object.assign(document.createElement("a"),{
+    href: URL.createObjectURL(new Blob([rows.join("\n")],{type:"text/csv"})),
+    download: "EIS_summary.csv"
+  });
   a.click();
+  toast("CSV exported", "ok");
 });
 </script>
 </body>
